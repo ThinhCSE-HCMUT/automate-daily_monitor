@@ -1,0 +1,14 @@
+# Faxback Cloud — https://cloud.faxback.net/faxadmin/
+username=simplifiadmin
+password=
+
+url=https://cloud.faxback.net/faxadmin/
+fax_numbers=84352738502,84388164291
+attach=scripts/fax_message.txt
+headless=1
+login_wait_sec=15
+queue_wait_sec=420
+queue_refresh_sec=30
+queue_name=ReceivedPendingDeletion
+fax_users=simplifivn1:861107035990853,simplifivn2:866758040526465
+status_file=output/fax_status.txt

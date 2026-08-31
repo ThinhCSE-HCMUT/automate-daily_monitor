@@ -1,0 +1,15 @@
+/monitor
+/output/
+/.venv/
+*.o
+.DS_Store
+sharepoint.conf
+fax.conf
+portal.conf
+token_cache.bin
+*.xlsx
+
+__pycache__/
+*.pyc
+
+monitor.conf

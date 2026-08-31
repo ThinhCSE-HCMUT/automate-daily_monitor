@@ -1,0 +1,18 @@
+[Unit]
+Description=Simplifi daily station monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/Workspace/Daily_Monitor/automate-daily_monitor
+ExecStart=/home/pi/Workspace/Daily_Monitor/automate-daily_monitor/monitor -c /home/pi/Workspace/Daily_Monitor/automate-daily_monitor/monitor.conf
+Nice=5
+TimeoutStartSec=3600
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

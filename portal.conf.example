@@ -1,0 +1,8 @@
+# STG Simplifi Portal
+email=qa@simplifi.io
+password=
+totp_secret=
+
+portal_url=https://stg-portal.proxy.simplifi.io/developer/log
+headless=1
+login_wait_sec=40

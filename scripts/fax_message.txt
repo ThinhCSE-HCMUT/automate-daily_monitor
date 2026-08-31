@@ -1,0 +1,14 @@
+========================================
+  SIMPLIFI DAILY MONITOR - FAX TEST
+========================================
+
+Sent: 2026-08-30 18:13:25
+From: Raspberry Pi daily monitor
+
+This page was sent automatically after the
+SSH router check and portal log download.
+
+If this prints on the Fax Station, the fax
+path is working.
+
+========================================

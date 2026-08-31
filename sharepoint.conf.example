@@ -1,0 +1,15 @@
+# SharePoint — monitoring station workbook
+username=thinh.le.aura@simplifi.io
+password=
+
+tenant=simplifi.io
+# Optional Azure public-client app id. Leave empty to use Microsoft Office
+# (same family as Excel/Edge). Do not use Graph Command Line Tools.
+client_id=
+token_cache=token_cache.bin
+
+site_url=https://simplifirouter.sharepoint.com/sites/simplifi-qa
+file_url=https://simplifirouter.sharepoint.com/:x:/s/simplifi-qa/IQCBOZ_qcOldQJtApZbsLl01AabF5rVRpCCQFgfPPwmx1_o?e=qpIa4w
+file_name=monitoring_station.xlsx
+# If sharing-link resolve fails, set the server-relative path:
+# file_path=/sites/simplifi-qa/Shared Documents/monitoring_station.xlsx

@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Simplifi daily monitor at 08:00
+
+[Timer]
+OnCalendar=*-*-* 08:00:00
+Persistent=true
+AccuracySec=1min
+RandomizedDelaySec=0
+
+[Install]
+WantedBy=timers.target

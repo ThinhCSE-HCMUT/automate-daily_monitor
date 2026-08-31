@@ -126,24 +126,65 @@ def read_today_csv(path: str, today: date) -> dict[str, dict[str, str]]:
     return rows
 
 
+# All station sheets: "Uptime (days, hh:mm)". CSV still uses "Uptime (hh:mm)".
+EXCEL_UPTIME = "Uptime (days, hh:mm)"
+HEADER_ALIASES = {
+    "uptime (days, hh:mm)": (
+        "Uptime (days, hh:mm)",
+        "Uptime (day:hh:mm)",
+        "Uptime (hh:mm)",
+        "Uptime",
+    ),
+    "uptime (hh:mm)": (
+        "Uptime (days, hh:mm)",
+        "Uptime (day:hh:mm)",
+        "Uptime (hh:mm)",
+        "Uptime",
+    ),
+    "wifi status (sim data)": (
+        "WiFi Status (Sim Data)",
+        "WiFi Status",
+    ),
+    "voicelink/fax status": ("Voicelink/Fax status", "Voicelink Status", "Fax Status"),
+    "fax status": ("Fax Status", "Voicelink/Fax status"),
+    "voicelink status": ("Voicelink Status", "Voicelink/Fax status"),
+}
+
+
+def rec_field(rec: dict[str, str], *names: str) -> str:
+    by_norm = {norm_header(k): (v or "").strip() for k, v in rec.items() if k}
+    for name in names:
+        v = by_norm.get(norm_header(name))
+        if v:
+            return v
+    for name in names:
+        token = norm_header(name).split()[0]
+        if not token:
+            continue
+        for key, val in by_norm.items():
+            if key.startswith(token) and val:
+                return val
+    return ""
+
+
 def csv_to_excel_values(rec: dict[str, str], status_header: str) -> dict[str, str]:
     if status_header == "Voicelink Status":
         status = "N/A"
     else:
-        status = rec.get("Voicelink/Fax status") or rec.get("Voicelink Status") or rec.get("Fax Status") or ""
+        status = rec_field(rec, "Voicelink/Fax status", "Voicelink Status", "Fax Status")
     return {
-        "Date": rec.get("Date") or "",
-        "Anydesk ID": rec.get("Anydesk ID") or "",
-        "IMEI": rec.get("IMEI") or "",
-        "Firmware Version": rec.get("Firmware Version") or "",
-        "Uptime (hh:mm)": rec.get("Uptime (hh:mm)") or "",
+        "Date": rec_field(rec, "Date"),
+        "Anydesk ID": rec_field(rec, "Anydesk ID"),
+        "IMEI": rec_field(rec, "IMEI"),
+        "Firmware Version": rec_field(rec, "Firmware Version"),
+        EXCEL_UPTIME: rec_field(rec, "Uptime (hh:mm)", EXCEL_UPTIME, "Uptime (day:hh:mm)", "Uptime"),
         status_header: status,
-        "Carrier": rec.get("Carrier") or "",
-        "Phone": rec.get("Phone") or "",
-        "RSSI (dBm)": rec.get("RSSI (dBm)") or "",
-        "WiFi Status (Sim Data)": rec.get("WiFi Status (Sim Data)") or "",
-        "SSH Access": rec.get("SSH Access") or "",
-        "Note": rec.get("Note") or "",
+        "Carrier": rec_field(rec, "Carrier"),
+        "Phone": rec_field(rec, "Phone"),
+        "RSSI (dBm)": rec_field(rec, "RSSI (dBm)", "RSSI"),
+        "WiFi Status (Sim Data)": rec_field(rec, "WiFi Status (Sim Data)", "WiFi Status"),
+        "SSH Access": rec_field(rec, "SSH Access"),
+        "Note": rec_field(rec, "Note"),
     }
 
 
@@ -163,10 +204,26 @@ def find_header_row(ws, max_scan: int = 12) -> tuple[int, dict[str, int]]:
 
 
 def col_for(mapping: dict[str, int], *names: str) -> int | None:
+    wanted: list[str] = []
     for name in names:
-        idx = mapping.get(norm_header(name))
+        wanted.append(norm_header(name))
+        for alias in HEADER_ALIASES.get(norm_header(name), ()):
+            wanted.append(norm_header(alias))
+    seen: set[str] = set()
+    for key in wanted:
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        idx = mapping.get(key)
         if idx:
             return idx
+    for name in names:
+        token = norm_header(name).split()[0]
+        if not token:
+            continue
+        for key, idx in mapping.items():
+            if key.startswith(token):
+                return idx
     return None
 
 
@@ -183,21 +240,6 @@ def find_same_day_row(ws, header_row: int, date_col: int, today: date) -> int | 
         if parse_day(ws.cell(r, date_col).value) == today:
             return r
     return None
-
-
-def sheets_already_have_day(data: bytes, today: date) -> list[str]:
-    """VN sheets that already have a row dated `today` (manual fill)."""
-    wb = load_workbook(io.BytesIO(data), data_only=False)
-    hits: list[str] = []
-    for spec in SHEETS:
-        ws = resolve_sheet(wb, spec["names"])
-        if ws is None:
-            continue
-        header_row, mapping = find_header_row(ws)
-        date_col = col_for(mapping, "Date")
-        if date_col and find_same_day_row(ws, header_row, date_col, today):
-            hits.append(ws.title)
-    return hits
 
 
 def expand_tables(ws, max_row: int) -> None:
@@ -273,26 +315,56 @@ def upsert_sheet(wb, spec: dict, rec: dict[str, str], today: date) -> str:
         return f"{ws.title}: missing Date/IMEI header"
 
     values = csv_to_excel_values(rec, spec["status_header"])
-    if find_same_day_row(ws, header_row, date_col, today):
-        return f"{ws.title}: already has {today.isoformat()}"
-    target = last_used_row(ws, header_row, imei_col) + 1
-    action = "append"
+    uptime_val = values.get(EXCEL_UPTIME) or ""
+    if not uptime_val or uptime_val.upper() in ("N/A", "NA"):
+        log(
+            "WARN",
+            f"{ws.title}: CSV uptime is {uptime_val!r} for IMEI {rec.get('IMEI') or spec['imei']}",
+        )
+    existing = find_same_day_row(ws, header_row, date_col, today)
+    if existing:
+        target = existing
+        action = "fill-blank"
+        only_blank = True
+    else:
+        target = last_used_row(ws, header_row, imei_col) + 1
+        action = "append"
+        only_blank = False
 
     used_cols: list[int] = []
+    wrote = 0
     for header, value in values.items():
         col = col_for(mapping, header)
         if not col:
+            if "uptime" in header.lower():
+                log(
+                    "WARN",
+                    f"{ws.title}: no Uptime column (headers={sorted(mapping.keys())})",
+                )
             continue
         used_cols.append(col)
+        if only_blank:
+            cur = ws.cell(target, col).value
+            if cur not in (None, ""):
+                continue
+            if value is None or str(value).strip() == "":
+                continue
         if header == "Date":
-            write_date_cell(ws, target, col, value, today)
+            if not only_blank:
+                write_date_cell(ws, target, col, value, today)
+                wrote += 1
             continue
         force_text = header in ("IMEI", "Anydesk ID", "Phone")
         write_cell(ws, target, col, value, force_text)
+        wrote += 1
+    if only_blank and wrote == 0:
+        return f"{ws.title}: already has {today.isoformat()} (complete)"
     note_col = col_for(mapping, "Note")
     end_col = note_col or (max(used_cols) if used_cols else date_col)
     apply_row_borders(ws, target, date_col, end_col)
     expand_tables(ws, target)
+    if only_blank:
+        return f"{ws.title} row {target} (filled {wrote} blank cells)"
     return f"{ws.title} row {target} ({action})"
 
 
@@ -692,16 +764,14 @@ def apply_today_or_skip(
     out_xlsx: str,
     upload,
 ) -> int:
-    """Return 0 if skipped or written. Does not upload when today already exists."""
-    hits = sheets_already_have_day(raw, today)
-    if hits:
+    """Fill new rows or blank cells (e.g. Uptime). Skip upload if nothing changed."""
+    updated, changed = fill_workbook(raw, csv_rows, today)
+    if changed == 0:
         log(
             "PASSED",
-            f"SharePoint already has {today.isoformat()} on {', '.join(hits)} "
-            "(manual daily monitor) — leave workbook unchanged",
+            f"SharePoint already complete for {today.isoformat()} — leave workbook unchanged",
         )
         return 0
-    updated = fill_workbook(raw, csv_rows, today)
     if dry_run:
         write_local_xlsx(out_xlsx, updated)
         return 0
@@ -711,10 +781,11 @@ def apply_today_or_skip(
     return 0
 
 
-def fill_workbook(data: bytes, csv_rows: dict[str, dict[str, str]], today: date) -> bytes:
+def fill_workbook(data: bytes, csv_rows: dict[str, dict[str, str]], today: date) -> tuple[bytes, int]:
     wb = load_workbook(io.BytesIO(data))
     log("INFO", f"Workbook sheets: {', '.join(wb.sheetnames)}")
     ok = 0
+    changed = 0
     for spec in SHEETS:
         rec = csv_rows.get(spec["imei"])
         if not rec:
@@ -723,14 +794,19 @@ def fill_workbook(data: bytes, csv_rows: dict[str, dict[str, str]], today: date)
         result = upsert_sheet(wb, spec, rec, today)
         if result.startswith("sheet not found") or "missing" in result:
             log("ERROR", result)
-        else:
+            continue
+        if "filled" in result or "(append)" in result:
             log("PASSED", result)
+            changed += 1
+            ok += 1
+        else:
+            log("INFO", result)
             ok += 1
     if ok == 0:
         raise RuntimeError("No SharePoint sheet was updated")
     out = io.BytesIO()
     wb.save(out)
-    return out.getvalue()
+    return out.getvalue(), changed
 
 
 def main() -> int:

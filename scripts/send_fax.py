@@ -18,6 +18,7 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
 
 from chrome_util import build_chrome, chrome_binary, linux_chromedriver, temp_profile
+from fax_queue_match import DEFAULT_WINDOW_MIN, date_needles, match_users
 
 
 FAX_URL = "https://cloud.faxback.net/faxadmin/"
@@ -33,73 +34,215 @@ STATUS_FILE = "output/fax_status.txt"
 SCAN_ROWS_JS = """
 const users = arguments[0];
 const dates = arguments[1];
+const year = arguments[2];
+const month = arguments[3];
+const day = arguments[4];
+const hour = arguments[5];
+const minute = arguments[6];
+const windowMin = arguments[7];
 const found = {};
-users.forEach((u) => { found[u] = false; });
-const samples = [];
+const userHits = {};
+users.forEach((u) => { found[u] = false; userHits[u] = false; });
+
+function norm(s) { return (s || "").replace(/\\s+/g, " ").trim(); }
+
+function hasUser(text) {
+  const tl = (text || "").toLowerCase();
+  for (const u of users) {
+    if (tl.indexOf(String(u).toLowerCase()) !== -1) return u;
+  }
+  return null;
+}
 
 function dateHit(text) {
   const t = text || "";
   const tl = t.toLowerCase();
   for (const d of dates) {
-    if (!d) continue;
-    if (t.indexOf(d) !== -1 || tl.indexOf(String(d).toLowerCase()) !== -1)
+    if (d && (t.indexOf(d) !== -1 || tl.indexOf(String(d).toLowerCase()) !== -1))
       return true;
+  }
+  if (t.indexOf(String(year)) === -1) return false;
+  const months = ["january","february","march","april","may","june",
+                  "july","august","september","october","november","december"];
+  const name = months[month - 1] || "";
+  const abbr = name.slice(0, 3);
+  const mm = String(month).padStart(2, "0");
+  const dd = String(day).padStart(2, "0");
+  const hasMonth = tl.indexOf(name) !== -1 || tl.indexOf(abbr) !== -1
+    || t.indexOf("-" + mm + "-") !== -1 || t.indexOf("/" + mm + "/") !== -1
+    || t.indexOf(mm + "/") !== -1 || t.indexOf(mm + "-") !== -1;
+  const hasDay = t.indexOf("-" + dd) !== -1 || t.indexOf("/" + dd) !== -1
+    || t.indexOf(dd + "/") !== -1 || t.indexOf(dd + ",") !== -1
+    || t.indexOf(" " + dd + ",") !== -1 || t.indexOf(" " + String(day) + ",") !== -1
+    || t.indexOf(" " + String(day) + " ") !== -1;
+  return hasMonth && hasDay;
+}
+
+function parseTimes(text) {
+  const out = [];
+  const re = /\\b(\\d{1,2}):(\\d{2})(?::(\\d{2}))?\\s*(am|pm)?\\b/gi;
+  let m;
+  while ((m = re.exec(text || ""))) {
+    let h = parseInt(m[1], 10);
+    const min = parseInt(m[2], 10);
+    const ap = (m[4] || "").toLowerCase();
+    if (min > 59) continue;
+    if (ap === "pm" && h < 12) h += 12;
+    if (ap === "am" && h === 12) h = 0;
+    if (!ap && h > 23) continue;
+    out.push(h * 60 + min);
+  }
+  return out;
+}
+
+function timeHit(text) {
+  if (!dateHit(text)) return false;
+  const times = parseTimes(text);
+  if (!times.length) return false;
+  const target = hour * 60 + minute;
+  const win = (windowMin == null || windowMin < 0) ? 7 : windowMin;
+  for (const t of times) {
+    let d = Math.abs(t - target);
+    d = Math.min(d, 1440 - d);
+    if (d <= win) return true;
   }
   return false;
 }
 
-function userFromRow(text) {
-  const t = (text || "").replace(/\\s+/g, " ");
-  if (!dateHit(t)) return null;
-  const tl = t.toLowerCase();
-  let matched = null;
-  for (const u of users) {
-    if (tl.indexOf(String(u).toLowerCase()) !== -1) {
-      matched = u;
-      break;
-    }
-  }
-  if (!matched) return null;
-  if (/hung up|poor line|no answer|busy|failed/i.test(t) && !/success/i.test(t))
-    return null;
-  return matched;
-}
-
 function mark(text) {
-  const u = userFromRow(text);
-  if (u) found[u] = true;
+  const t = norm(text);
+  const u = hasUser(t);
+  if (u) userHits[u] = true;
+  if (!u || !timeHit(t)) return;
+  if (/hung up|poor line|no answer|busy|failed/i.test(t) && !/success/i.test(t))
+    return;
+  found[u] = true;
 }
 
-const rowNodes = document.querySelectorAll('tr, [role="row"]');
-for (const n of rowNodes)
-  mark(n.innerText || n.textContent || "");
+function q1Index(n) {
+  if (n <= 1) return 0;
+  return Math.floor((n - 1) * 0.25);
+}
 
-const cells = document.querySelectorAll(".jqx-grid-cell, .jqx-grid-cell-left-align, .jqx-grid-cell-pinned");
-if (cells.length) {
+function allFound() {
+  return users.every((u) => found[u]);
+}
+
+function scanFromEnd(rowTexts) {
+  const n = rowTexts.length;
+  const q1 = q1Index(n);
+  let scanned = 0;
+  for (let i = n - 1; i >= q1; i--) {
+    scanned++;
+    mark(rowTexts[i] || "");
+    if (allFound()) break;
+  }
+  return {n: n, q1: q1, scanned: scanned};
+}
+
+function dumpRow(row, depth) {
+  if (row == null) return "";
+  if (typeof row !== "object") return String(row);
+  if (depth > 2) return "";
+  const parts = [];
+  for (const k of Object.keys(row)) {
+    if (!k || k[0] === "_" || k === "uid" || k === "uniqueid" || k === "boundindex")
+      continue;
+    let v = row[k];
+    if (v instanceof Date) {
+      const p = (n) => String(n).padStart(2, "0");
+      v = v.getFullYear() + "-" + p(v.getMonth() + 1) + "-" + p(v.getDate())
+        + " " + p(v.getHours()) + ":" + p(v.getMinutes());
+    }
+    else if (v && typeof v === "object") v = dumpRow(v, (depth || 0) + 1);
+    if (v != null && String(v).length) parts.push(String(v));
+  }
+  return parts.join(" ");
+}
+
+function goToLast(grid) {
+  try {
+    const info = grid.jqxGrid("getdatainformation") || {};
+    const n = info.rowscount || 0;
+    const pg = info.paginginformation || {};
+    const pages = pg.pagescount || 0;
+    if (pages > 1) grid.jqxGrid("gotopage", pages - 1);
+    if (n > 0) {
+      grid.jqxGrid("ensurerowvisible", n - 1);
+      if (n > 1) grid.jqxGrid("ensurerowvisible", Math.max(0, n - 2));
+    }
+    grid.jqxGrid("scrolloffset", 0, 999999);
+  } catch (e) {}
+}
+
+let apiRows = 0;
+let q1 = 0;
+let scanned = 0;
+const tailSamples = [];
+const $ = window.jQuery;
+if ($ && $.fn && $.fn.jqxGrid) {
+  $(".jqx-grid").each(function () {
+    if (allFound()) return;
+    const grid = $(this);
+    let rows = [];
+    try { rows = grid.jqxGrid("getboundrows") || []; } catch (e) {}
+    if (!rows.length) {
+      try { rows = grid.jqxGrid("getrows") || []; } catch (e) {}
+    }
+    if (!rows.length) {
+      try { rows = grid.jqxGrid("getdisplayrows") || []; } catch (e) {}
+    }
+    apiRows += rows.length;
+    goToLast(grid);
+    const texts = rows.map((r) => dumpRow(r, 0));
+    const meta = scanFromEnd(texts);
+    q1 = meta.q1;
+    scanned = meta.scanned;
+    texts.slice(-4).forEach((t) => {
+      t = norm(t).slice(0, 180);
+      if (t) tailSamples.push(t);
+    });
+  });
+}
+
+if (!apiRows) {
+  const rowNodes = document.querySelectorAll("tr, [role=row]");
+  const texts = [];
+  for (const n of rowNodes) {
+    const t = norm(n.innerText || n.textContent || "");
+    if (t) texts.push(t);
+  }
+  const cells = document.querySelectorAll(
+    ".jqx-grid-cell, .jqx-grid-cell-left-align, .jqx-grid-cell-pinned, .jqx-cell, [role=gridcell]"
+  );
   const byRow = {};
+  const rowOrder = [];
   for (const c of cells) {
     const r = c.getBoundingClientRect();
     const key = c.getAttribute("row") || c.getAttribute("data-row")
-      || String(Math.round(r.top / 8) * 8);
+      || String(Math.round(r.top / 4) * 4);
+    if (!byRow[key]) rowOrder.push(key);
     byRow[key] = (byRow[key] || "") + " " + (c.innerText || c.textContent || "");
   }
-  Object.keys(byRow).forEach((k) => {
-    if (samples.length < 6) samples.push(byRow[k].replace(/\\s+/g, " ").trim().slice(0, 140));
-    mark(byRow[k]);
+  const cellTexts = rowOrder.map((k) => norm(byRow[k])).filter(Boolean);
+  const meta = scanFromEnd(cellTexts.length ? cellTexts : texts);
+  q1 = meta.q1;
+  scanned = meta.scanned;
+  (cellTexts.length ? cellTexts : texts).slice(-4).forEach((t) => {
+    t = norm(t).slice(0, 180);
+    if (t) tailSamples.push(t);
   });
 }
 
-if (!users.some((u) => found[u])) {
-  const body = document.body ? (document.body.innerText || "") : "";
-  users.forEach((u) => {
-    const low = body.toLowerCase();
-    const idx = low.indexOf(String(u).toLowerCase());
-    if (idx < 0) return;
-    const windowText = body.slice(Math.max(0, idx - 240), idx + 240);
-    mark(windowText);
-  });
-}
-return {found: found, samples: samples, cells: cells.length};
+return {
+  found: found,
+  samples: tailSamples.slice(-4),
+  cells: apiRows ? 0 : document.querySelectorAll(".jqx-grid-cell").length,
+  apiRows: apiRows,
+  userHits: userHits,
+  q1: q1,
+  scanned: scanned
+};
 """
 
 
@@ -256,29 +399,6 @@ def parse_queue_users(raw: str) -> list[tuple[str, str]]:
         if user and imei:
             pairs.append((user, imei))
     return pairs or list(DEFAULT_QUEUE_USERS)
-
-
-def date_needles(now: datetime) -> list[str]:
-    day = str(now.day)
-    month_abbr = now.strftime("%b")
-    month_full = now.strftime("%B")
-    needles = [
-        f"{month_abbr} {day}, {now.year}",
-        f"{month_abbr} {now.day:02d}, {now.year}",
-        f"{month_full} {day}, {now.year}",
-        now.strftime("%Y-%m-%d"),
-        now.strftime("%m/%d/%Y"),
-        f"{now.month}/{now.day}/{now.year}",
-        now.strftime("%d/%m/%Y"),
-        f"{now.day:02d}/{now.month:02d}/{now.year}",
-    ]
-    seen: set[str] = set()
-    out: list[str] = []
-    for n in needles:
-        if n not in seen:
-            seen.add(n)
-            out.append(n)
-    return out
 
 
 def write_status(path: str, found: dict[str, bool], users: list[tuple[str, str]]) -> None:
@@ -679,9 +799,25 @@ def click_refresh(driver) -> bool:
 
 
 def scroll_queue_grid(driver) -> None:
+    """New faxes land at the bottom; jqx only renders visible rows unless we jump there."""
     js = """
-    const panes = document.querySelectorAll('.jqx-grid-content, .jqx-widget-content');
-    panes.forEach((p) => { p.scrollTop = p.scrollHeight; });
+    const $ = window.jQuery;
+    if ($ && $.fn && $.fn.jqxGrid) {
+      $('.jqx-grid').each(function () {
+        const grid = $(this);
+        try {
+          const info = grid.jqxGrid('getdatainformation') || {};
+          const n = info.rowscount || 0;
+          const pages = (info.paginginformation || {}).pagescount || 0;
+          if (pages > 1) grid.jqxGrid('gotopage', pages - 1);
+          if (n > 0) grid.jqxGrid('ensurerowvisible', n - 1);
+          grid.jqxGrid('scrolloffset', 0, 999999);
+        } catch (e) {}
+      });
+    }
+    document.querySelectorAll('.jqx-grid-content, .jqx-widget-content, .jqx-grid').forEach((p) => {
+      try { p.scrollTop = p.scrollHeight; } catch (e) {}
+    });
     """
     for _ in iter_frames(driver):
         try:
@@ -691,25 +827,49 @@ def scroll_queue_grid(driver) -> None:
     driver.switch_to.default_content()
 
 
-def scan_queue(driver, users: list[str], needles: list[str]) -> dict[str, bool]:
+def scan_queue(
+    driver,
+    users: list[str],
+    needles: list[str],
+    monitor_at: datetime,
+    window_min: int = DEFAULT_WINDOW_MIN,
+) -> dict[str, bool]:
     accept_alerts(driver)
     out = {u: False for u in users}
-    samples_logged = False
+    logged = False
     for _ in iter_frames(driver):
-        payload = {}
+        payload: dict = {}
         try:
-            payload = driver.execute_script(SCAN_ROWS_JS, users, needles) or {}
+            payload = driver.execute_script(
+                SCAN_ROWS_JS,
+                users,
+                needles,
+                monitor_at.year,
+                monitor_at.month,
+                monitor_at.day,
+                monitor_at.hour,
+                monitor_at.minute,
+                window_min,
+            ) or {}
         except Exception as exc:
             log("DEBUG", f"Queue scan JS failed: {exc}")
-        if isinstance(payload, dict) and "found" in payload:
-            found = payload.get("found") or {}
-            samples = payload.get("samples") or []
-            ncells = payload.get("cells")
-            if samples and not samples_logged:
-                log("INFO", f"Grid cells={ncells} sample: {samples[0][:120]}")
-                samples_logged = True
-        else:
-            found = payload if isinstance(payload, dict) else {}
+        if not isinstance(payload, dict):
+            payload = {}
+        found = payload.get("found") or {}
+        samples = payload.get("samples") or []
+        user_hits = payload.get("userHits") or {}
+        api_rows = payload.get("apiRows") or 0
+        ncells = payload.get("cells") or 0
+        useful = bool(api_rows or ncells or samples or any(user_hits.get(u) for u in users))
+        if useful and not logged:
+            hit = ",".join(u for u in users if user_hits.get(u)) or "-"
+            last = samples[-1][:160] if samples else "(empty)"
+            log(
+                "INFO",
+                f"Scan apiRows={api_rows} q1={payload.get('q1')} scanned={payload.get('scanned')} "
+                f"cells={ncells} usersInGrid={hit} lastRow={last}",
+            )
+            logged = True
         for u in users:
             if found.get(u):
                 out[u] = True
@@ -719,19 +879,15 @@ def scan_queue(driver, users: list[str], needles: list[str]) -> dict[str, bool]:
             text = driver.find_element(By.TAG_NAME, "body").text or ""
         except Exception:
             text = ""
+        py = match_users(text, users, monitor_at, window_min)
         for u in users:
-            if out[u]:
-                continue
-            low = text.lower()
-            idx = low.find(u.lower())
-            if idx < 0:
-                continue
-            window = text[max(0, idx - 240) : idx + 240]
-            if any(n in window for n in needles):
+            if py.get(u):
                 out[u] = True
         if all(out.values()):
             break
     driver.switch_to.default_content()
+    if not logged:
+        log("INFO", "Scan apiRows=0 cells=0 usersInGrid=- lastRow=(no jqx grid in any frame)")
     return out
 
 
@@ -749,11 +905,18 @@ def wait_received_queue(
     queue_name: str,
     wait_sec: int,
     refresh_sec: int,
-    monitor_day: datetime,
+    monitor_at: datetime,
+    window_min: int = DEFAULT_WINDOW_MIN,
 ) -> dict[str, bool]:
     names = [u for u, _ in users]
-    needles = date_needles(monitor_day)
-    log("INFO", f"PASS requires Users {', '.join(names)} on {needles[0]} in {queue_name} only (not Received)")
+    needles = date_needles(monitor_at)
+    clock = monitor_at.strftime("%H:%M")
+    log(
+        "INFO",
+        f"PASS requires Users {', '.join(names)} on {needles[0]} "
+        f"within +/-{window_min} min of {clock} in {queue_name} only (not Received); "
+        f"scan last row up to Q1",
+    )
     on_queue = open_received_pending_queue(driver, wait, queue_name)
 
     deadline = time.time() + max(wait_sec, 1)
@@ -768,10 +931,10 @@ def wait_received_queue(
             log("WARN", f"{elapsed_label}: still on '{shown}' — not scanning Received for PASS")
             return {u: False for u in names}
         click_refresh(driver)
-        time.sleep(2)
+        time.sleep(3)
         scroll_queue_grid(driver)
-        time.sleep(0.4)
-        got = scan_queue(driver, names, needles)
+        time.sleep(0.8)
+        got = scan_queue(driver, names, needles, monitor_at, window_min)
         log("INFO", f"{elapsed_label}: {status_line(got, users)}")
         return got
 
@@ -793,7 +956,10 @@ def wait_received_queue(
         if all(found.get(u) for u in names):
             return found
 
-    found = scan_queue(driver, names, needles) if queue_filter_selected(driver, queue_name) else found
+    if queue_filter_selected(driver, queue_name):
+        scroll_queue_grid(driver)
+        time.sleep(0.5)
+        found = scan_queue(driver, names, needles, monitor_at, window_min)
     dump_shot(driver, "queues_final")
     return found
 
@@ -818,7 +984,8 @@ def main() -> int:
     queue_name = cfg.get("queue_name") or "ReceivedPendingDeletion"
     queue_users = parse_queue_users(cfg.get("fax_users") or "")
     status_path = cfg.get("status_file") or args.status_file
-    monitor_day = datetime.now()
+    window_min = int(cfg.get("queue_time_window_min") or str(DEFAULT_WINDOW_MIN))
+    monitor_at = datetime.now()
     found = {u: False for u, _ in queue_users}
 
     if not user or not password:
@@ -893,7 +1060,7 @@ def main() -> int:
         log("INFO", f"Send Fax clicked — polling {queue_name} for {queue_wait}s (refresh every {refresh_sec}s)")
 
         found = wait_received_queue(
-            driver, wait, queue_users, queue_name, queue_wait, refresh_sec, monitor_day
+            driver, wait, queue_users, queue_name, queue_wait, refresh_sec, monitor_at, window_min
         )
         write_status(status_path, found, queue_users)
         missing = [u for u, _ in queue_users if not found.get(u)]

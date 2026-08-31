@@ -10,5 +10,6 @@ login_wait_sec=15
 queue_wait_sec=420
 queue_refresh_sec=30
 queue_name=ReceivedPendingDeletion
+queue_time_window_min=7
 fax_users=simplifivn1:861107035990853,simplifivn2:866758040526465
 status_file=output/fax_status.txt

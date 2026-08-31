@@ -24,6 +24,10 @@ _TIME_RE = re.compile(
 )
 _FAIL_RE = re.compile(r"hung up|poor line|no answer|busy|failed", re.IGNORECASE)
 _OK_RE = re.compile(r"success", re.IGNORECASE)
+_JUNK_RE = re.compile(
+    r"access denied|forgot password|try again|^login$",
+    re.IGNORECASE,
+)
 
 
 def date_needles(when: datetime) -> list[str]:
@@ -137,8 +141,29 @@ def row_is_pass(
     return True
 
 
+def is_junk_row(text: str) -> bool:
+    t = (text or "").strip()
+    if not t:
+        return True
+    if _JUNK_RE.search(t) and "simplifivn" not in t.lower():
+        return True
+    return False
+
+
+def matched_our_user(
+    text: str,
+    users: list[str] | tuple[str, ...],
+    when: datetime,
+    window_min: int = DEFAULT_WINDOW_MIN,
+) -> str | None:
+    for u in users:
+        if row_is_pass(text, u, when, window_min):
+            return u
+    return None
+
+
 def split_rows(text: str) -> list[str]:
-    return [ln.strip() for ln in (text or "").splitlines() if ln.strip()]
+    return [ln.strip() for ln in (text or "").splitlines() if ln.strip() and not is_junk_row(ln)]
 
 
 def q1_index(n: int) -> int:
@@ -158,6 +183,43 @@ def match_users(
     return found
 
 
+def match_last_pair(
+    rows: list[str],
+    users: list[str] | tuple[str, ...],
+    when: datetime,
+    window_min: int = DEFAULT_WINDOW_MIN,
+) -> tuple[dict[str, bool], dict[str, str | int]]:
+    """Last row only; if it is vn1/vn2 + time match, check the row above for the other."""
+    found = {u: False for u in users}
+    clean = [r for r in rows if not is_junk_row(r)]
+    meta: dict[str, str | int] = {
+        "n": len(clean),
+        "last": "",
+        "prev": "",
+        "lastUser": "",
+        "prevUser": "",
+    }
+    if not clean:
+        return found, meta
+    last = clean[-1]
+    meta["last"] = last[:140]
+    u_last = matched_our_user(last, users, when, window_min)
+    if not u_last:
+        return found, meta
+    found[u_last] = True
+    meta["lastUser"] = u_last
+    if len(clean) < 2:
+        return found, meta
+    prev = clean[-2]
+    meta["prev"] = prev[:140]
+    u_prev = matched_our_user(prev, users, when, window_min)
+    if u_prev:
+        meta["prevUser"] = u_prev
+        if u_prev != u_last:
+            found[u_prev] = True
+    return found, meta
+
+
 def match_rows_from_end(
     rows: list[str],
     users: list[str] | tuple[str, ...],
@@ -166,13 +228,14 @@ def match_rows_from_end(
 ) -> tuple[dict[str, bool], dict[str, int]]:
     """Newest row first, walk up, stop at Q1 (skip the oldest quarter)."""
     found = {u: False for u in users}
-    n = len(rows)
+    clean = [r for r in rows if not is_junk_row(r)]
+    n = len(clean)
     q1 = q1_index(n)
     scanned = 0
     for i in range(n - 1, q1 - 1, -1):
         scanned += 1
         for u in users:
-            if not found[u] and row_is_pass(rows[i], u, when, window_min):
+            if not found[u] and row_is_pass(clean[i], u, when, window_min):
                 found[u] = True
         if found and all(found[u] for u in users):
             break

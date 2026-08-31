@@ -27,6 +27,7 @@ from fax_queue_match import (  # noqa: E402
     DEFAULT_USERS,
     DEFAULT_WINDOW_MIN,
     SCREENSHOT_ROWS,
+    match_last_pair,
     match_rows_from_end,
     parse_clock_minutes,
     q1_index,
@@ -76,7 +77,20 @@ def crowded_table(tail_ours: bool) -> str:
     return "\n".join(decoy + others + tail)
 
 
-def run_case(label: str, text: str, when: datetime, window_min: int, expect_pass: bool) -> bool:
+def run_pair(label: str, text: str, when: datetime, window_min: int, expect_pass: bool) -> bool:
+    rows = split_rows(text)
+    found, meta = match_last_pair(rows, list(DEFAULT_USERS), when, window_min)
+    ok = all(found.values()) if expect_pass else not all(found.values())
+    level = "PASSED" if ok else "FAILED"
+    log(
+        level,
+        f"{label}: {status_line(found)}  last={meta.get('lastUser') or '-'} "
+        f"prev={meta.get('prevUser') or '-'} monitor={when.strftime('%H:%M')}",
+    )
+    return ok
+
+
+def run_q1(label: str, text: str, when: datetime, window_min: int, expect_pass: bool) -> bool:
     rows = split_rows(text)
     found, meta = match_rows_from_end(rows, list(DEFAULT_USERS), when, window_min)
     ok = all(found.values()) if expect_pass else not any(found.values())
@@ -84,7 +98,7 @@ def run_case(label: str, text: str, when: datetime, window_min: int, expect_pass
     log(
         level,
         f"{label}: {status_line(found)}  n={meta['n']} q1={meta['q1']} "
-        f"scanned={meta['scanned']} monitor={when.strftime('%H:%M')} +/-{window_min}m",
+        f"scanned={meta['scanned']} monitor={when.strftime('%H:%M')}",
     )
     n = len(rows)
     q1 = q1_index(n)
@@ -94,11 +108,8 @@ def run_case(label: str, text: str, when: datetime, window_min: int, expect_pass
         clock_s = ",".join(f"{c // 60:02d}:{c % 60:02d}" for c in clocks) or "-"
         hits = [u for u in DEFAULT_USERS if row_is_pass(line, u, when, window_min)]
         log("DEBUG", f"  [{i}] clock={clock_s} users={hits or '-'} | {line[:120]}")
-        if hits and all(found[u] for u in DEFAULT_USERS if found.get(u)):
-            if all(found.values()):
-                break
-    if n and q1 > 0:
-        log("DEBUG", f"  skipped above Q1: rows 0..{q1 - 1}")
+        if all(found.values()):
+            break
     return ok
 
 
@@ -120,23 +131,19 @@ def main() -> int:
     window_min = args.window_min
 
     log("INFO", "No fax will be sent - matcher only")
-    log("INFO", "Scan last row upward, stop at Q1 (oldest quarter ignored)")
+    log("INFO", "Phase 1: last row + row above. Phase 2 (after 7 min): last -> Q1")
     log("INFO", f"Users {', '.join(DEFAULT_USERS)}; same day; clock +/-{window_min} min")
     if args.image and os.path.isfile(args.image):
         log("INFO", f"Screenshot: {os.path.abspath(args.image)}")
 
     ok = True
-    ok &= run_case("screenshot tail vs 16:04", SCREENSHOT_ROWS, when, window_min, True)
-
-    ok &= run_case(
-        "crowded queue: ours at bottom, decoys above Q1",
-        crowded_table(True),
-        when,
-        window_min,
-        True,
+    ok &= run_pair("pair: screenshot last two", SCREENSHOT_ROWS, when, window_min, True)
+    others_then_ours = "\n".join(
+        [fake_row("otheruser")] + split_rows(SCREENSHOT_ROWS)
     )
-    ok &= run_case(
-        "crowded queue: only decoys above Q1 (should ignore)",
+    ok &= run_pair("pair: other then our two at tail", others_then_ours, when, window_min, True)
+    ok &= run_pair(
+        "pair: last is other (do nothing)",
         crowded_table(False),
         when,
         window_min,
@@ -144,19 +151,16 @@ def main() -> int:
     )
 
     too_late = when + timedelta(minutes=window_min + 2)
-    ok &= run_case(
-        f"negative: monitor {too_late.strftime('%H:%M')} outside window",
-        SCREENSHOT_ROWS,
-        too_late,
-        window_min,
-        False,
-    )
+    ok &= run_pair("pair: outside +/-7 min", SCREENSHOT_ROWS, too_late, window_min, False)
+
+    ok &= run_q1("q1: ours at bottom, decoys above Q1", crowded_table(True), when, window_min, True)
+    ok &= run_q1("q1: only decoys above Q1", crowded_table(False), when, window_min, False)
 
     yesterday = when - timedelta(days=1)
-    ok &= run_case("negative: yesterday", SCREENSHOT_ROWS, yesterday, window_min, False)
+    ok &= run_pair("pair: yesterday", SCREENSHOT_ROWS, yesterday, window_min, False)
 
     if ok:
-        log("PASSED", "Bottom-up-to-Q1 matcher agrees with the screenshot")
+        log("PASSED", "Last-pair + Q1 matcher agrees with the screenshot")
         return 0
     log("FAILED", "Matcher did not match as expected")
     return 1

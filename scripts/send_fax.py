@@ -18,7 +18,12 @@ from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
 
 from chrome_util import build_chrome, chrome_binary, linux_chromedriver, temp_profile
-from fax_queue_match import DEFAULT_WINDOW_MIN, date_needles, match_users
+from fax_queue_match import (
+    DEFAULT_WINDOW_MIN,
+    date_needles,
+    match_last_pair,
+    match_rows_from_end,
+)
 
 
 FAX_URL = "https://cloud.faxback.net/faxadmin/"
@@ -31,114 +36,10 @@ DEFAULT_QUEUE_USERS = (
 CHROME_PROFILE = ""
 STATUS_FILE = "output/fax_status.txt"
 
-SCAN_ROWS_JS = """
-const users = arguments[0];
-const dates = arguments[1];
-const year = arguments[2];
-const month = arguments[3];
-const day = arguments[4];
-const hour = arguments[5];
-const minute = arguments[6];
-const windowMin = arguments[7];
-const found = {};
-const userHits = {};
-users.forEach((u) => { found[u] = false; userHits[u] = false; });
+COLLECT_GRID_JS = """
+const mode = arguments[0] || "pair";
 
 function norm(s) { return (s || "").replace(/\\s+/g, " ").trim(); }
-
-function hasUser(text) {
-  const tl = (text || "").toLowerCase();
-  for (const u of users) {
-    if (tl.indexOf(String(u).toLowerCase()) !== -1) return u;
-  }
-  return null;
-}
-
-function dateHit(text) {
-  const t = text || "";
-  const tl = t.toLowerCase();
-  for (const d of dates) {
-    if (d && (t.indexOf(d) !== -1 || tl.indexOf(String(d).toLowerCase()) !== -1))
-      return true;
-  }
-  if (t.indexOf(String(year)) === -1) return false;
-  const months = ["january","february","march","april","may","june",
-                  "july","august","september","october","november","december"];
-  const name = months[month - 1] || "";
-  const abbr = name.slice(0, 3);
-  const mm = String(month).padStart(2, "0");
-  const dd = String(day).padStart(2, "0");
-  const hasMonth = tl.indexOf(name) !== -1 || tl.indexOf(abbr) !== -1
-    || t.indexOf("-" + mm + "-") !== -1 || t.indexOf("/" + mm + "/") !== -1
-    || t.indexOf(mm + "/") !== -1 || t.indexOf(mm + "-") !== -1;
-  const hasDay = t.indexOf("-" + dd) !== -1 || t.indexOf("/" + dd) !== -1
-    || t.indexOf(dd + "/") !== -1 || t.indexOf(dd + ",") !== -1
-    || t.indexOf(" " + dd + ",") !== -1 || t.indexOf(" " + String(day) + ",") !== -1
-    || t.indexOf(" " + String(day) + " ") !== -1;
-  return hasMonth && hasDay;
-}
-
-function parseTimes(text) {
-  const out = [];
-  const re = /\\b(\\d{1,2}):(\\d{2})(?::(\\d{2}))?\\s*(am|pm)?\\b/gi;
-  let m;
-  while ((m = re.exec(text || ""))) {
-    let h = parseInt(m[1], 10);
-    const min = parseInt(m[2], 10);
-    const ap = (m[4] || "").toLowerCase();
-    if (min > 59) continue;
-    if (ap === "pm" && h < 12) h += 12;
-    if (ap === "am" && h === 12) h = 0;
-    if (!ap && h > 23) continue;
-    out.push(h * 60 + min);
-  }
-  return out;
-}
-
-function timeHit(text) {
-  if (!dateHit(text)) return false;
-  const times = parseTimes(text);
-  if (!times.length) return false;
-  const target = hour * 60 + minute;
-  const win = (windowMin == null || windowMin < 0) ? 7 : windowMin;
-  for (const t of times) {
-    let d = Math.abs(t - target);
-    d = Math.min(d, 1440 - d);
-    if (d <= win) return true;
-  }
-  return false;
-}
-
-function mark(text) {
-  const t = norm(text);
-  const u = hasUser(t);
-  if (u) userHits[u] = true;
-  if (!u || !timeHit(t)) return;
-  if (/hung up|poor line|no answer|busy|failed/i.test(t) && !/success/i.test(t))
-    return;
-  found[u] = true;
-}
-
-function q1Index(n) {
-  if (n <= 1) return 0;
-  return Math.floor((n - 1) * 0.25);
-}
-
-function allFound() {
-  return users.every((u) => found[u]);
-}
-
-function scanFromEnd(rowTexts) {
-  const n = rowTexts.length;
-  const q1 = q1Index(n);
-  let scanned = 0;
-  for (let i = n - 1; i >= q1; i--) {
-    scanned++;
-    mark(rowTexts[i] || "");
-    if (allFound()) break;
-  }
-  return {n: n, q1: q1, scanned: scanned};
-}
 
 function dumpRow(row, depth) {
   if (row == null) return "";
@@ -153,19 +54,33 @@ function dumpRow(row, depth) {
       const p = (n) => String(n).padStart(2, "0");
       v = v.getFullYear() + "-" + p(v.getMonth() + 1) + "-" + p(v.getDate())
         + " " + p(v.getHours()) + ":" + p(v.getMinutes());
+    } else if (v && typeof v === "object") {
+      v = dumpRow(v, (depth || 0) + 1);
     }
-    else if (v && typeof v === "object") v = dumpRow(v, (depth || 0) + 1);
     if (v != null && String(v).length) parts.push(String(v));
   }
   return parts.join(" ");
+}
+
+function pickUser(text) {
+  const t = (text || "").toLowerCase();
+  if (t.indexOf("simplifivn1") !== -1) return "simplifivn1";
+  if (t.indexOf("simplifivn2") !== -1) return "simplifivn2";
+  return "";
+}
+
+function isJunkDoc() {
+  const t = ((document.body && document.body.innerText) || "").toLowerCase();
+  if (t.indexOf("simplifivn") !== -1 || t.indexOf("pendingdeletion") !== -1)
+    return false;
+  return t.indexOf("forgot password") !== -1 || t.indexOf("access denied") !== -1;
 }
 
 function goToLast(grid) {
   try {
     const info = grid.jqxGrid("getdatainformation") || {};
     const n = info.rowscount || 0;
-    const pg = info.paginginformation || {};
-    const pages = pg.pagescount || 0;
+    const pages = (info.paginginformation || {}).pagescount || 0;
     if (pages > 1) grid.jqxGrid("gotopage", pages - 1);
     if (n > 0) {
       grid.jqxGrid("ensurerowvisible", n - 1);
@@ -175,73 +90,69 @@ function goToLast(grid) {
   } catch (e) {}
 }
 
-let apiRows = 0;
-let q1 = 0;
-let scanned = 0;
-const tailSamples = [];
+function q1Index(n) {
+  if (n <= 1) return 0;
+  return Math.floor((n - 1) * 0.25);
+}
+
+function textsFromGrid(grid) {
+  goToLast(grid);
+  let n = 0;
+  try {
+    const info = grid.jqxGrid("getdatainformation") || {};
+    n = info.rowscount || 0;
+  } catch (e) {}
+  const out = [];
+  if (n > 0) {
+    let start = 0;
+    if (mode === "pair") start = Math.max(0, n - 2);
+    else start = q1Index(n);
+    for (let i = start; i < n; i++) {
+      try {
+        const t = dumpRow(grid.jqxGrid("getrowdata", i), 0);
+        if (t) out.push(t);
+      } catch (e) {}
+    }
+  }
+  if (out.length) return {n: n || out.length, rows: out};
+  let rows = [];
+  try { rows = grid.jqxGrid("getboundrows") || []; } catch (e) {}
+  if (!rows.length) {
+    try { rows = grid.jqxGrid("getrows") || []; } catch (e) {}
+  }
+  if (!rows.length) {
+    try { rows = grid.jqxGrid("getdisplayrows") || []; } catch (e) {}
+  }
+  const dumped = rows.map((r) => dumpRow(r, 0)).filter(Boolean);
+  const nn = dumped.length;
+  let slice = dumped;
+  if (mode === "pair") slice = dumped.slice(-2);
+  else slice = dumped.slice(q1Index(nn));
+  return {n: nn, rows: slice};
+}
+
 const $ = window.jQuery;
-if ($ && $.fn && $.fn.jqxGrid) {
-  $(".jqx-grid").each(function () {
-    if (allFound()) return;
-    const grid = $(this);
-    let rows = [];
-    try { rows = grid.jqxGrid("getboundrows") || []; } catch (e) {}
-    if (!rows.length) {
-      try { rows = grid.jqxGrid("getrows") || []; } catch (e) {}
-    }
-    if (!rows.length) {
-      try { rows = grid.jqxGrid("getdisplayrows") || []; } catch (e) {}
-    }
-    apiRows += rows.length;
-    goToLast(grid);
-    const texts = rows.map((r) => dumpRow(r, 0));
-    const meta = scanFromEnd(texts);
-    q1 = meta.q1;
-    scanned = meta.scanned;
-    texts.slice(-4).forEach((t) => {
-      t = norm(t).slice(0, 180);
-      if (t) tailSamples.push(t);
-    });
-  });
+if (!($ && $.fn && $.fn.jqxGrid && $(".jqx-grid").length)) {
+  if (isJunkDoc()) return {skip: true, n: 0, rows: [], via: "junk"};
+  return {skip: false, n: 0, rows: [], lastRow: "", lastUser: "", via: "none"};
 }
 
-if (!apiRows) {
-  const rowNodes = document.querySelectorAll("tr, [role=row]");
-  const texts = [];
-  for (const n of rowNodes) {
-    const t = norm(n.innerText || n.textContent || "");
-    if (t) texts.push(t);
-  }
-  const cells = document.querySelectorAll(
-    ".jqx-grid-cell, .jqx-grid-cell-left-align, .jqx-grid-cell-pinned, .jqx-cell, [role=gridcell]"
-  );
-  const byRow = {};
-  const rowOrder = [];
-  for (const c of cells) {
-    const r = c.getBoundingClientRect();
-    const key = c.getAttribute("row") || c.getAttribute("data-row")
-      || String(Math.round(r.top / 4) * 4);
-    if (!byRow[key]) rowOrder.push(key);
-    byRow[key] = (byRow[key] || "") + " " + (c.innerText || c.textContent || "");
-  }
-  const cellTexts = rowOrder.map((k) => norm(byRow[k])).filter(Boolean);
-  const meta = scanFromEnd(cellTexts.length ? cellTexts : texts);
-  q1 = meta.q1;
-  scanned = meta.scanned;
-  (cellTexts.length ? cellTexts : texts).slice(-4).forEach((t) => {
-    t = norm(t).slice(0, 180);
-    if (t) tailSamples.push(t);
-  });
-}
-
+let best = {n: 0, rows: []};
+$(".jqx-grid").each(function () {
+  try {
+    const got = textsFromGrid($(this));
+    if ((got.n || got.rows.length) >= (best.n || best.rows.length)) best = got;
+  } catch (e) {}
+});
+const rows = best.rows || [];
+const lastRow = rows.length ? rows[rows.length - 1] : "";
 return {
-  found: found,
-  samples: tailSamples.slice(-4),
-  cells: apiRows ? 0 : document.querySelectorAll(".jqx-grid-cell").length,
-  apiRows: apiRows,
-  userHits: userHits,
-  q1: q1,
-  scanned: scanned
+  skip: false,
+  n: best.n || rows.length,
+  rows: rows,
+  lastRow: lastRow,
+  lastUser: pickUser(lastRow),
+  via: "jqx"
 };
 """
 
@@ -827,68 +738,62 @@ def scroll_queue_grid(driver) -> None:
     driver.switch_to.default_content()
 
 
-def scan_queue(
-    driver,
-    users: list[str],
-    needles: list[str],
-    monitor_at: datetime,
-    window_min: int = DEFAULT_WINDOW_MIN,
-) -> dict[str, bool]:
-    accept_alerts(driver)
-    out = {u: False for u in users}
-    logged = False
+def collect_queue_rows(driver, mode: str) -> tuple[list[str], dict]:
+    """Read the real jqx queue grid; skip login/Access Denied documents."""
+    best_rows: list[str] = []
+    best_meta: dict = {"n": 0, "via": "none", "lastRow": "", "lastUser": ""}
     for _ in iter_frames(driver):
         payload: dict = {}
         try:
-            payload = driver.execute_script(
-                SCAN_ROWS_JS,
-                users,
-                needles,
-                monitor_at.year,
-                monitor_at.month,
-                monitor_at.day,
-                monitor_at.hour,
-                monitor_at.minute,
-                window_min,
-            ) or {}
+            payload = driver.execute_script(COLLECT_GRID_JS, mode) or {}
         except Exception as exc:
-            log("DEBUG", f"Queue scan JS failed: {exc}")
-        if not isinstance(payload, dict):
-            payload = {}
-        found = payload.get("found") or {}
-        samples = payload.get("samples") or []
-        user_hits = payload.get("userHits") or {}
-        api_rows = payload.get("apiRows") or 0
-        ncells = payload.get("cells") or 0
-        useful = bool(api_rows or ncells or samples or any(user_hits.get(u) for u in users))
-        if useful and not logged:
-            hit = ",".join(u for u in users if user_hits.get(u)) or "-"
-            last = samples[-1][:160] if samples else "(empty)"
-            log(
-                "INFO",
-                f"Scan apiRows={api_rows} q1={payload.get('q1')} scanned={payload.get('scanned')} "
-                f"cells={ncells} usersInGrid={hit} lastRow={last}",
-            )
-            logged = True
-        for u in users:
-            if found.get(u):
-                out[u] = True
-        if all(out.values()):
-            break
-        try:
-            text = driver.find_element(By.TAG_NAME, "body").text or ""
-        except Exception:
-            text = ""
-        py = match_users(text, users, monitor_at, window_min)
-        for u in users:
-            if py.get(u):
-                out[u] = True
-        if all(out.values()):
-            break
+            log("DEBUG", f"Grid collect JS failed: {exc}")
+            continue
+        if not isinstance(payload, dict) or payload.get("skip"):
+            continue
+        rows = [r for r in (payload.get("rows") or []) if isinstance(r, str) and r.strip()]
+        n = int(payload.get("n") or len(rows) or 0)
+        last = (payload.get("lastRow") or (rows[-1] if rows else ""))[:160]
+        if "access denied" in last.lower() and "simplifivn" not in last.lower():
+            continue
+        better = n > int(best_meta.get("n") or 0) or (
+            n == int(best_meta.get("n") or 0) and rows and not best_rows
+        )
+        if better:
+            best_rows = rows
+            best_meta = {
+                "n": n,
+                "via": payload.get("via") or "",
+                "lastRow": last,
+                "lastUser": payload.get("lastUser") or "",
+            }
     driver.switch_to.default_content()
-    if not logged:
-        log("INFO", "Scan apiRows=0 cells=0 usersInGrid=- lastRow=(no jqx grid in any frame)")
-    return out
+    return best_rows, best_meta
+
+
+def scan_queue(
+    driver,
+    users: list[str],
+    monitor_at: datetime,
+    window_min: int = DEFAULT_WINDOW_MIN,
+    mode: str = "pair",
+) -> dict[str, bool]:
+    accept_alerts(driver)
+    rows, meta = collect_queue_rows(driver, mode)
+    log(
+        "INFO",
+        f"Grid n={meta.get('n')} via={meta.get('via')} lastUser={meta.get('lastUser') or '-'} "
+        f"lastRow={(meta.get('lastRow') or '')[:120]}",
+    )
+    if mode == "q1":
+        found, extra = match_rows_from_end(rows, users, monitor_at, window_min)
+        log("INFO", f"Q1 sweep scanned={extra.get('scanned')} q1={extra.get('q1')}")
+        return found
+    found, extra = match_last_pair(rows, users, monitor_at, window_min)
+    last_u = extra.get("lastUser") or "-"
+    prev_u = extra.get("prevUser") or "-"
+    log("INFO", f"Last-pair lastUser={last_u} prevUser={prev_u}")
+    return found
 
 
 def status_line(found: dict[str, bool], users: list[tuple[str, str]]) -> str:
@@ -913,16 +818,15 @@ def wait_received_queue(
     clock = monitor_at.strftime("%H:%M")
     log(
         "INFO",
-        f"PASS requires Users {', '.join(names)} on {needles[0]} "
-        f"within +/-{window_min} min of {clock} in {queue_name} only (not Received); "
-        f"scan last row up to Q1",
+        f"PASS: last row is {', '.join(names)} (day {needles[0]}, +/-{window_min} min of {clock}), "
+        f"then the row above is the other user. After {wait_sec}s, walk last->Q1 once.",
     )
     on_queue = open_received_pending_queue(driver, wait, queue_name)
 
     deadline = time.time() + max(wait_sec, 1)
     found = {u: False for u in names}
 
-    def poll_once(elapsed_label: str) -> dict[str, bool]:
+    def poll_once(elapsed_label: str, mode: str) -> dict[str, bool]:
         nonlocal on_queue
         if not queue_filter_selected(driver, queue_name):
             on_queue = ensure_pending_deletion_queue(driver, wait, queue_name)
@@ -934,11 +838,11 @@ def wait_received_queue(
         time.sleep(3)
         scroll_queue_grid(driver)
         time.sleep(0.8)
-        got = scan_queue(driver, names, needles, monitor_at, window_min)
-        log("INFO", f"{elapsed_label}: {status_line(got, users)}")
+        got = scan_queue(driver, names, monitor_at, window_min, mode)
+        log("INFO", f"{elapsed_label} [{mode}]: {status_line(got, users)}")
         return got
 
-    found = poll_once(f"Queue check 0s/{wait_sec}s")
+    found = poll_once(f"Queue check 0s/{wait_sec}s", "pair")
     if all(found.get(u) for u in names):
         return found
 
@@ -947,19 +851,21 @@ def wait_received_queue(
         sleep_for = min(refresh_sec, max(0, remaining))
         if sleep_for <= 0:
             break
-        log("INFO", f"Waiting for {queue_name} ({remaining}s left): {status_line(found, users)}")
+        log("INFO", f"Waiting for last-pair ({remaining}s left): {status_line(found, users)}")
         time.sleep(sleep_for)
         if time.time() >= deadline:
             break
         elapsed = wait_sec - max(0, int(deadline - time.time()))
-        found = poll_once(f"Queue check {elapsed}s/{wait_sec}s")
+        found = poll_once(f"Queue check {elapsed}s/{wait_sec}s", "pair")
         if all(found.get(u) for u in names):
             return found
 
+    log("INFO", f"{wait_sec}s elapsed — last-pair miss, walking last row to Q1")
     if queue_filter_selected(driver, queue_name):
-        scroll_queue_grid(driver)
-        time.sleep(0.5)
-        found = scan_queue(driver, names, needles, monitor_at, window_min)
+        found = poll_once("Q1 sweep", "q1")
+    else:
+        shown = queue_dropdown_text(driver) or "(unknown)"
+        log("WARN", f"Q1 sweep skipped — still on '{shown}'")
     dump_shot(driver, "queues_final")
     return found
 

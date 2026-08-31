@@ -30,92 +30,17 @@ from selenium.webdriver.support import expected_conditions as EC  # noqa: E402
 from selenium.webdriver.support.ui import WebDriverWait  # noqa: E402
 
 import send_fax as fax  # noqa: E402
-
-GRID_INFO_JS = """
-function pickUser(row) {
-  if (!row || typeof row !== "object") return "";
-  const keys = ["User", "user", "Username", "username", "USER", "Owner", "Account"];
-  for (const k of keys) {
-    const v = row[k];
-    if (v != null && String(v).trim()) return String(v).trim().split(/\\s+/)[0];
-  }
-  const skip = /success|pending|received|deletion|^\\d+$|^\\d{10,}$|aug|jan|feb|mar|apr|may|jun|jul|sep|oct|nov|dec/i;
-  for (const k of Object.keys(row)) {
-    if (!k || k[0] === "_" || k === "uid" || k === "uniqueid" || k === "boundindex") continue;
-    const v = row[k];
-    if (v == null || typeof v === "object") continue;
-    const s = String(v).trim();
-    if (s.length >= 3 && s.length <= 40 && !skip.test(s)) return s.split(/\\s+/)[0];
-  }
-  return "";
-}
-
-function dump(row) {
-  if (!row || typeof row !== "object") return String(row || "");
-  const parts = [];
-  for (const k of Object.keys(row)) {
-    if (!k || k[0] === "_" || k === "uid") continue;
-    const v = row[k];
-    if (v == null || typeof v === "object") continue;
-    const s = String(v).trim();
-    if (s) parts.push(s);
-  }
-  return parts.join(" | ");
-}
-
-const $ = window.jQuery;
-let n = 0;
-let lastUser = "";
-let lastRow = "";
-let via = "none";
-if ($ && $.fn && $.fn.jqxGrid) {
-  $(".jqx-grid").each(function () {
-    const grid = $(this);
-    let rows = [];
-    let infoN = 0;
-    try {
-      const info = grid.jqxGrid("getdatainformation") || {};
-      infoN = info.rowscount || 0;
-    } catch (e) {}
-    try { rows = grid.jqxGrid("getboundrows") || []; } catch (e) {}
-    if (!rows.length) {
-      try { rows = grid.jqxGrid("getrows") || []; } catch (e) {}
-    }
-    const count = Math.max(infoN, rows.length);
-    if (count >= n) {
-      n = count;
-      via = "jqx";
-      if (rows.length) {
-        const last = rows[rows.length - 1];
-        lastUser = pickUser(last);
-        lastRow = dump(last).slice(0, 180);
-      }
-    }
-  });
-}
-return {n: n, lastUser: lastUser, lastRow: lastRow, via: via};
-"""
+from fax_queue_match import extract_user  # noqa: E402
 
 
 def snapshot(driver) -> dict:
-    best = {"n": 0, "lastUser": "", "lastRow": "", "via": "none"}
-    for _ in fax.iter_frames(driver):
-        try:
-            got = driver.execute_script(GRID_INFO_JS) or {}
-        except Exception:
-            got = {}
-        if not isinstance(got, dict):
-            continue
-        if int(got.get("n") or 0) >= int(best.get("n") or 0) and (
-            got.get("lastUser") or got.get("n")
-        ):
-            best = got
-    driver.switch_to.default_content()
+    rows, meta = fax.collect_queue_rows(driver, "pair")
+    last = meta.get("lastRow") or (rows[-1] if rows else "")
     return {
-        "n": int(best.get("n") or 0),
-        "lastUser": (best.get("lastUser") or "").strip(),
-        "lastRow": (best.get("lastRow") or "").strip(),
-        "via": best.get("via") or "none",
+        "n": int(meta.get("n") or 0),
+        "lastUser": (meta.get("lastUser") or extract_user(last) or "").strip(),
+        "lastRow": last,
+        "via": meta.get("via") or "none",
     }
 
 
@@ -123,9 +48,10 @@ def poll_once(driver, queue_name: str) -> dict:
     if not fax.queue_filter_selected(driver, queue_name):
         fax.ensure_pending_deletion_queue(driver, WebDriverWait(driver, 15), queue_name)
     refreshed = fax.click_refresh(driver)
-    time.sleep(2)
+    time.sleep(1.5)
+    fax.wait_vgrid_rows(driver, timeout=10)
     fax.scroll_queue_grid(driver)
-    time.sleep(0.4)
+    time.sleep(0.7)
     info = snapshot(driver)
     info["refreshed"] = refreshed
     return info

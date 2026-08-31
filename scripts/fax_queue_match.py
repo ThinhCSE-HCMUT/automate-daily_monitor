@@ -90,7 +90,7 @@ def date_hit(text: str, when: datetime) -> bool:
 
 
 def parse_clock_minutes(text: str) -> list[int]:
-    """Minutes from midnight for each clock in text (04:05pm → 16*60+5)."""
+    """Minutes from midnight. 05:24pm and 5:24 PM → 17:24; 17:24 stays 17:24."""
     out: list[int] = []
     for m in _TIME_RE.finditer(text or ""):
         hour = int(m.group(1))
@@ -106,6 +106,58 @@ def parse_clock_minutes(text: str) -> list[int]:
             continue
         out.append(hour * 60 + minute)
     return out
+
+
+_RECV_RE = re.compile(
+    r"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}"
+    r"\s+\d{1,2}:\d{2}(?::\d{2})?\s*(?:am|pm)?",
+    re.IGNORECASE,
+)
+_USER_TOKEN_RE = re.compile(r"simplifivn[12]", re.IGNORECASE)
+
+
+def extract_received_on(text: str) -> str:
+    m = _RECV_RE.search(text or "")
+    if m:
+        return re.sub(r"\s+", " ", m.group(0)).strip()
+    times = parse_clock_minutes(text or "")
+    if times:
+        t = times[-1]
+        return f"{t // 60:02d}:{t % 60:02d}"
+    return ""
+
+
+def extract_user(text: str) -> str:
+    m = _USER_TOKEN_RE.search(text or "")
+    if m:
+        return m.group(0).lower()
+    m = re.search(
+        r"(?:^|\|)\s*([A-Za-z][A-Za-z0-9._-]*)\s*\|\s*PendingDeletion\b",
+        text or "",
+        re.I,
+    )
+    if m:
+        return m.group(1)
+    return ""
+
+
+def clocks_as_24h(text: str) -> list[str]:
+    return [f"{t // 60:02d}:{t % 60:02d}" for t in parse_clock_minutes(text)]
+
+
+def describe_last_row(text: str, when: datetime | None = None) -> str:
+    rec = extract_received_on(text) or "-"
+    user = extract_user(text) or "-"
+    parsed = ",".join(clocks_as_24h(text)) or "none"
+    bits = [f"User={user}", f"Received On={rec}", f"parsed24h={parsed}"]
+    if when is not None:
+        bits.append(f"monitor={when.strftime('%H:%M')} (24h)")
+        times = parse_clock_minutes(text)
+        if times:
+            target = when.hour * 60 + when.minute
+            delta = min(minutes_apart(t, target) for t in times)
+            bits.append(f"delta={delta}m")
+    return " ".join(bits)
 
 
 def minutes_apart(a: int, b: int) -> int:

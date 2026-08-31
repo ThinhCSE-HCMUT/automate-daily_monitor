@@ -153,6 +153,42 @@ def main() -> int:
     too_late = when + timedelta(minutes=window_min + 2)
     ok &= run_pair("pair: outside +/-7 min", SCREENSHOT_ROWS, too_late, window_min, False)
 
+    vgrid_last = (
+        "Aug 31, 2026 05:24pm | 84352738502 | 1 | simplifivn1 | "
+        "PendingDeletion | 1 | 0 | 0 | Success"
+    )
+    vgrid_prev = (
+        "Aug 31, 2026 05:24pm | 84388164291 | 1 | simplifivn2 | "
+        "PendingDeletion | 1 | 0 | 0 | Success"
+    )
+    ok &= run_pair(
+        "pair: v-grid-col dump (outerHTML)",
+        "\n".join([vgrid_prev, vgrid_last]),
+        datetime(2026, 8, 31, 17, 24),
+        window_min,
+        True,
+    )
+
+    from fax_queue_match import extract_received_on, extract_user
+
+    accounts_leak = (
+        "MSFax/API | metra23 | Greg | Branham | 866834045282063 | "
+        "gbranham@metrarr.com | Client Inbox | Oct 01, 2025 03:07am"
+    )
+    other_last = (
+        "Aug 31, 2026 05:24pm | 84352738502 | 1 | metra8 | "
+        "PendingDeletion | 1 | 0 | 0 | Success"
+    )
+    leak_ok = extract_user(accounts_leak) == ""
+    other_ok = extract_user(other_last) == "metra8" and "Aug 31, 2026" in extract_received_on(
+        other_last
+    )
+    log(
+        "PASSED" if other_ok and leak_ok else "FAILED",
+        f"user-col: metra8={extract_user(other_last)!r} leak={extract_user(accounts_leak)!r}",
+    )
+    ok &= other_ok and leak_ok
+
     ok &= run_q1("q1: ours at bottom, decoys above Q1", crowded_table(True), when, window_min, True)
     ok &= run_q1("q1: only decoys above Q1", crowded_table(False), when, window_min, False)
 

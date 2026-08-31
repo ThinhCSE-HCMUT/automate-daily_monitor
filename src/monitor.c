@@ -760,6 +760,7 @@ static void send_fax_stations(void)
     }
 
     chrome_cleanup();
+    /* scripts/send_fax.py: Queues v-grid last row (PendingDeletion), not jqxGrid. */
     py = python_bin();
     snprintf(cmd, sizeof(cmd),
              "PYTHONUNBUFFERED=1 %s scripts/send_fax.py --conf '%s' 2>&1",

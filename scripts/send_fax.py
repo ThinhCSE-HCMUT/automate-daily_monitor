@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import sys
 import time
@@ -21,6 +22,9 @@ from chrome_util import build_chrome, chrome_binary, linux_chromedriver, temp_pr
 from fax_queue_match import (
     DEFAULT_WINDOW_MIN,
     date_needles,
+    describe_last_row,
+    extract_received_on,
+    extract_user,
     match_last_pair,
     match_rows_from_end,
 )
@@ -36,123 +40,135 @@ DEFAULT_QUEUE_USERS = (
 CHROME_PROFILE = ""
 STATUS_FILE = "output/fax_status.txt"
 
-COLLECT_GRID_JS = """
-const mode = arguments[0] || "pair";
-
-function norm(s) { return (s || "").replace(/\\s+/g, " ").trim(); }
-
-function dumpRow(row, depth) {
-  if (row == null) return "";
-  if (typeof row !== "object") return String(row);
-  if (depth > 2) return "";
-  const parts = [];
-  for (const k of Object.keys(row)) {
-    if (!k || k[0] === "_" || k === "uid" || k === "uniqueid" || k === "boundindex")
-      continue;
-    let v = row[k];
-    if (v instanceof Date) {
-      const p = (n) => String(n).padStart(2, "0");
-      v = v.getFullYear() + "-" + p(v.getMonth() + 1) + "-" + p(v.getDate())
-        + " " + p(v.getHours()) + ":" + p(v.getMinutes());
-    } else if (v && typeof v === "object") {
-      v = dumpRow(v, (depth || 0) + 1);
-    }
-    if (v != null && String(v).length) parts.push(String(v));
-  }
-  return parts.join(" ");
-}
-
-function pickUser(text) {
-  const t = (text || "").toLowerCase();
-  if (t.indexOf("simplifivn1") !== -1) return "simplifivn1";
-  if (t.indexOf("simplifivn2") !== -1) return "simplifivn2";
-  return "";
-}
-
-function isJunkDoc() {
-  const t = ((document.body && document.body.innerText) || "").toLowerCase();
-  if (t.indexOf("simplifivn") !== -1 || t.indexOf("pendingdeletion") !== -1)
-    return false;
-  return t.indexOf("forgot password") !== -1 || t.indexOf("access denied") !== -1;
-}
-
-function goToLast(grid) {
-  try {
-    const info = grid.jqxGrid("getdatainformation") || {};
-    const n = info.rowscount || 0;
-    const pages = (info.paginginformation || {}).pagescount || 0;
-    if (pages > 1) grid.jqxGrid("gotopage", pages - 1);
-    if (n > 0) {
-      grid.jqxGrid("ensurerowvisible", n - 1);
-      if (n > 1) grid.jqxGrid("ensurerowvisible", Math.max(0, n - 2));
-    }
-    grid.jqxGrid("scrolloffset", 0, 999999);
-  } catch (e) {}
-}
-
-function q1Index(n) {
-  if (n <= 1) return 0;
-  return Math.floor((n - 1) * 0.25);
-}
-
-function textsFromGrid(grid) {
-  goToLast(grid);
-  let n = 0;
-  try {
-    const info = grid.jqxGrid("getdatainformation") || {};
-    n = info.rowscount || 0;
-  } catch (e) {}
+# Faxback Queues table is a virtual list: div.v-grid-row / div.v-grid-col.
+# The page has several v-grids (Users/Accounts/etc). Only the Queues grid
+# has Routing Target = PendingDeletion. Newest faxes have the largest style.top.
+_JS_PIERCE = r"""
+function pierceAll(sel, root) {
   const out = [];
-  if (n > 0) {
-    let start = 0;
-    if (mode === "pair") start = Math.max(0, n - 2);
-    else start = q1Index(n);
-    for (let i = start; i < n; i++) {
-      try {
-        const t = dumpRow(grid.jqxGrid("getrowdata", i), 0);
-        if (t) out.push(t);
-      } catch (e) {}
+  const stack = [root || document];
+  while (stack.length) {
+    const r = stack.pop();
+    if (!r || !r.querySelectorAll) continue;
+    try { r.querySelectorAll(sel).forEach((e) => out.push(e)); } catch (e) {}
+    try {
+      r.querySelectorAll("*").forEach((el) => {
+        if (el.shadowRoot) stack.push(el.shadowRoot);
+      });
+    } catch (e) {}
+  }
+  return out;
+}
+function pierceIframes() {
+  return pierceAll("iframe, frame");
+}
+function norm(s) { return (s || "").replace(/\s+/g, " ").trim(); }
+function rowTop(el) {
+  const st = parseFloat((el.style && el.style.top) || "");
+  if (!isNaN(st)) return st;
+  return el.getBoundingClientRect().top;
+}
+function rowCols(el) {
+  return Array.from(el.querySelectorAll(".v-grid-col"))
+    .map((c) => norm(c.innerText || c.textContent || ""));
+}
+function dumpVRow(el) {
+  const cols = rowCols(el);
+  return cols.filter(Boolean).join(" | ") || norm(el.innerText || el.textContent || "");
+}
+function parseQueueRow(el) {
+  const cols = rowCols(el);
+  const text = cols.filter(Boolean).join(" | ");
+  const recIdx = cols.findIndex((c) =>
+    /(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+\d{1,2},?\s+\d{4}/i.test(c)
+  );
+  const rtIdx = cols.findIndex((c) => /pendingdeletion/i.test(c));
+  let user = "";
+  if (rtIdx > 0) user = cols[rtIdx - 1] || "";
+  else if (cols.length > 6) user = cols[6] || "";
+  const rec = recIdx >= 0 ? cols[recIdx] : "";
+  return {text: text, user: user, rec: rec, top: rowTop(el)};
+}
+function queueScore(text) {
+  const s = (text || "").toLowerCase();
+  if (!s) return -100;
+  if (/@[\w.-]+\.\w+|msfax|client inbox/.test(s)) return -80;
+  if (/access denied|forgot password/.test(s)) return -80;
+  let n = 0;
+  if (s.indexOf("pendingdeletion") !== -1) n += 15;
+  if (/\bsuccess\b/.test(s)) n += 3;
+  if (s.indexOf("simplifivn") !== -1) n += 8;
+  return n;
+}
+function pickQueueEls() {
+  const nodes = pierceAll(".v-grid-row");
+  const map = new Map();
+  nodes.forEach((el) => {
+    const p = el.parentElement || el;
+    if (!map.has(p)) map.set(p, []);
+    map.get(p).push(el);
+  });
+  let best = [];
+  let bestScore = -1;
+  map.forEach((els) => {
+    let score = 0;
+    els.forEach((el) => { score += queueScore(dumpVRow(el)); });
+    if (score > bestScore) {
+      bestScore = score;
+      best = els;
     }
-  }
-  if (out.length) return {n: n || out.length, rows: out};
-  let rows = [];
-  try { rows = grid.jqxGrid("getboundrows") || []; } catch (e) {}
-  if (!rows.length) {
-    try { rows = grid.jqxGrid("getrows") || []; } catch (e) {}
-  }
-  if (!rows.length) {
-    try { rows = grid.jqxGrid("getdisplayrows") || []; } catch (e) {}
-  }
-  const dumped = rows.map((r) => dumpRow(r, 0)).filter(Boolean);
-  const nn = dumped.length;
-  let slice = dumped;
-  if (mode === "pair") slice = dumped.slice(-2);
-  else slice = dumped.slice(q1Index(nn));
-  return {n: nn, rows: slice};
+  });
+  if (bestScore < 10) return [];
+  return best.slice().sort((a, b) => rowTop(a) - rowTop(b));
 }
-
-const $ = window.jQuery;
-if (!($ && $.fn && $.fn.jqxGrid && $(".jqx-grid").length)) {
-  if (isJunkDoc()) return {skip: true, n: 0, rows: [], via: "junk"};
-  return {skip: false, n: 0, rows: [], lastRow: "", lastUser: "", via: "none"};
+function scrollQueuePane() {
+  const rows = pickQueueEls();
+  if (!rows.length) {
+    return {scrolled: 0, queueRows: 0, allRows: pierceAll(".v-grid-row").length};
+  }
+  let pane = rows[0].parentElement;
+  let scrolled = 0;
+  while (pane && pane !== document.body && pane !== document.documentElement) {
+    try {
+      if (pane.scrollHeight > pane.clientHeight + 4) {
+        pane.scrollTop = pane.scrollHeight;
+        pane.dispatchEvent(new Event("scroll", { bubbles: true }));
+        scrolled++;
+      }
+    } catch (e) {}
+    pane = pane.parentElement;
+  }
+  return {scrolled: scrolled, queueRows: rows.length, allRows: pierceAll(".v-grid-row").length};
 }
+"""
 
-let best = {n: 0, rows: []};
-$(".jqx-grid").each(function () {
-  try {
-    const got = textsFromGrid($(this));
-    if ((got.n || got.rows.length) >= (best.n || best.rows.length)) best = got;
-  } catch (e) {}
-});
-const rows = best.rows || [];
-const lastRow = rows.length ? rows[rows.length - 1] : "";
+FIND_FRAMES_JS = _JS_PIERCE + "return pierceIframes();"
+
+SCROLL_VGRID_JS = _JS_PIERCE + "return scrollQueuePane();"
+
+COUNT_VGRID_JS = _JS_PIERCE + "return pickQueueEls().length;"
+
+COLLECT_GRID_JS = _JS_PIERCE + r"""
+const mode = arguments[0] || "pair";
+const els = pickQueueEls();
+const parsed = els.map(parseQueueRow).filter((x) => x.text);
+const dumped = parsed.map((x) => x.text);
+const n = dumped.length;
+const rows = mode === "pair" ? dumped.slice(-2) : dumped;
+const last = parsed.length ? parsed[parsed.length - 1] : {text: "", user: "", rec: "", top: 0};
 return {
   skip: false,
-  n: best.n || rows.length,
+  n: n,
   rows: rows,
-  lastRow: lastRow,
-  lastUser: pickUser(lastRow),
-  via: "jqx"
+  lastRow: last.text || "",
+  lastUser: last.user || "",
+  lastReceivedOn: last.rec || "",
+  via: last.text ? "v-grid" : "none",
+  probe: {
+    allRows: pierceAll(".v-grid-row").length,
+    queueRows: n,
+    maxTop: last.top || 0
+  }
 };
 """
 
@@ -378,20 +394,28 @@ def click_matching(driver, xpaths: list[str]) -> bool:
 
 
 def iter_frames(driver, max_depth: int = 6):
-    """Yield default document, then every iframe/frame including nested ones."""
+    """Yield default document, then every iframe/frame (light DOM + open shadow)."""
+
+    def frames_here():
+        try:
+            found = driver.execute_script(FIND_FRAMES_JS) or []
+        except Exception:
+            found = []
+        if found:
+            return list(found)
+        try:
+            return driver.find_elements(By.CSS_SELECTOR, "iframe, frame")
+        except Exception:
+            return []
 
     def rec(depth: int):
         yield
         if depth >= max_depth:
             return
-        try:
-            n = len(driver.find_elements(By.CSS_SELECTOR, "iframe, frame"))
-        except Exception:
-            return
-        for i in range(n):
+        frames = frames_here()
+        for frame in frames:
             try:
-                frames = driver.find_elements(By.CSS_SELECTOR, "iframe, frame")
-                driver.switch_to.frame(frames[i])
+                driver.switch_to.frame(frame)
             except Exception:
                 continue
             yield from rec(depth + 1)
@@ -710,40 +734,87 @@ def click_refresh(driver) -> bool:
 
 
 def scroll_queue_grid(driver) -> None:
-    """New faxes land at the bottom; jqx only renders visible rows unless we jump there."""
-    js = """
-    const $ = window.jQuery;
-    if ($ && $.fn && $.fn.jqxGrid) {
-      $('.jqx-grid').each(function () {
-        const grid = $(this);
-        try {
-          const info = grid.jqxGrid('getdatainformation') || {};
-          const n = info.rowscount || 0;
-          const pages = (info.paginginformation || {}).pagescount || 0;
-          if (pages > 1) grid.jqxGrid('gotopage', pages - 1);
-          if (n > 0) grid.jqxGrid('ensurerowvisible', n - 1);
-          grid.jqxGrid('scrolloffset', 0, 999999);
-        } catch (e) {}
-      });
-    }
-    document.querySelectorAll('.jqx-grid-content, .jqx-widget-content, .jqx-grid').forEach((p) => {
-      try { p.scrollTop = p.scrollHeight; } catch (e) {}
-    });
-    """
+    """Scroll the virtual v-grid to the last row (new faxes land at the bottom)."""
     for _ in iter_frames(driver):
         try:
-            driver.execute_script(js)
+            driver.execute_script(SCROLL_VGRID_JS)
         except Exception:
             continue
     driver.switch_to.default_content()
 
 
+def wait_vgrid_rows(driver, timeout: float = 12) -> int:
+    """After Refresh the virtual list may take a few seconds to mount."""
+    deadline = time.time() + max(timeout, 1)
+    best = 0
+    while time.time() < deadline:
+        for _ in iter_frames(driver):
+            try:
+                n = int(driver.execute_script(COUNT_VGRID_JS) or 0)
+            except Exception:
+                n = 0
+            if n > best:
+                best = n
+            if n:
+                driver.switch_to.default_content()
+                return n
+        time.sleep(0.4)
+    driver.switch_to.default_content()
+    return best
+
+
+def _selenium_vgrid_rows(driver, mode: str) -> tuple[list[str], dict]:
+    """Fallback: only Queues rows (PendingDeletion), sorted by style.top."""
+    scored: list[tuple[float, str]] = []
+    for _ in iter_frames(driver):
+        try:
+            els = driver.find_elements(By.CSS_SELECTOR, "div.v-grid-row")
+        except Exception:
+            continue
+        for el in els:
+            try:
+                cols = []
+                for col in el.find_elements(By.CSS_SELECTOR, ".v-grid-col"):
+                    cols.append(" ".join((col.text or "").split()))
+                text = " | ".join(p for p in cols if p)
+                if "pendingdeletion" not in text.lower():
+                    continue
+                if "@" in text or "msfax" in text.lower():
+                    continue
+                style = el.get_attribute("style") or ""
+                m = re.search(r"top:\s*(-?[\d.]+)", style, re.I)
+                top = float(m.group(1)) if m else 0.0
+                scored.append((top, text))
+            except Exception:
+                continue
+    driver.switch_to.default_content()
+    scored.sort(key=lambda x: x[0])
+    dumped = [t for _, t in scored]
+    rows = dumped[-2:] if mode == "pair" else dumped
+    last = dumped[-1] if dumped else ""
+    return rows, {
+        "n": len(dumped),
+        "via": "v-grid-selenium" if dumped else "none",
+        "lastRow": last[:240],
+        "lastUser": extract_user(last),
+        "lastReceivedOn": extract_received_on(last),
+    }
+
+
 def collect_queue_rows(driver, mode: str) -> tuple[list[str], dict]:
-    """Read the real jqx queue grid; skip login/Access Denied documents."""
+    """Read v-grid-row cells; skip login/Access Denied documents."""
     best_rows: list[str] = []
     best_meta: dict = {"n": 0, "via": "none", "lastRow": "", "lastUser": ""}
+    best_probe: dict = {}
+    html_has_vgrid = False
     for _ in iter_frames(driver):
         payload: dict = {}
+        try:
+            src = driver.page_source or ""
+            if "v-grid-row" in src:
+                html_has_vgrid = True
+        except Exception:
+            pass
         try:
             payload = driver.execute_script(COLLECT_GRID_JS, mode) or {}
         except Exception as exc:
@@ -753,7 +824,14 @@ def collect_queue_rows(driver, mode: str) -> tuple[list[str], dict]:
             continue
         rows = [r for r in (payload.get("rows") or []) if isinstance(r, str) and r.strip()]
         n = int(payload.get("n") or len(rows) or 0)
-        last = (payload.get("lastRow") or (rows[-1] if rows else ""))[:160]
+        last = (payload.get("lastRow") or (rows[-1] if rows else ""))[:240]
+        if "@" in last or "msfax" in last.lower():
+            continue
+        probe = payload.get("probe") or {}
+        if int(probe.get("queueRows") or probe.get("allRows") or 0) >= int(
+            best_probe.get("queueRows") or best_probe.get("allRows") or 0
+        ):
+            best_probe = probe
         if "access denied" in last.lower() and "simplifivn" not in last.lower():
             continue
         better = n > int(best_meta.get("n") or 0) or (
@@ -765,9 +843,20 @@ def collect_queue_rows(driver, mode: str) -> tuple[list[str], dict]:
                 "n": n,
                 "via": payload.get("via") or "",
                 "lastRow": last,
-                "lastUser": payload.get("lastUser") or "",
+                "lastUser": payload.get("lastUser") or extract_user(last),
+                "lastReceivedOn": payload.get("lastReceivedOn") or extract_received_on(last),
+                "maxTop": probe.get("maxTop"),
             }
     driver.switch_to.default_content()
+    if int(best_meta.get("n") or 0) == 0:
+        sel_rows, sel_meta = _selenium_vgrid_rows(driver, mode)
+        if int(sel_meta.get("n") or 0) > 0:
+            return sel_rows, sel_meta
+        log(
+            "INFO",
+            f"Probe queueRows={best_probe.get('queueRows')} allRows={best_probe.get('allRows')} "
+            f"htmlHasVGrid={html_has_vgrid}",
+        )
     return best_rows, best_meta
 
 
@@ -779,12 +868,26 @@ def scan_queue(
     mode: str = "pair",
 ) -> dict[str, bool]:
     accept_alerts(driver)
-    rows, meta = collect_queue_rows(driver, mode)
+    wait_vgrid_rows(driver, timeout=10)
+    rows: list[str] = []
+    meta: dict = {"n": 0, "via": "none", "lastRow": "", "lastUser": ""}
+    for _attempt in range(8):
+        scroll_queue_grid(driver)
+        time.sleep(0.7)
+        rows, meta = collect_queue_rows(driver, mode)
+        if int(meta.get("n") or 0) > 0 and (rows or meta.get("lastRow")):
+            break
+    last = meta.get("lastRow") or (rows[-1] if rows else "")
+    last_user = meta.get("lastUser") or extract_user(last) or "-"
+    last_rec = meta.get("lastReceivedOn") or extract_received_on(last) or "-"
     log(
         "INFO",
-        f"Grid n={meta.get('n')} via={meta.get('via')} lastUser={meta.get('lastUser') or '-'} "
-        f"lastRow={(meta.get('lastRow') or '')[:120]}",
+        f"Grid n={meta.get('n')} via={meta.get('via')} maxTop={meta.get('maxTop')} "
+        f"Last User={last_user} Last Received On={last_rec}",
     )
+    log("INFO", describe_last_row(last, monitor_at))
+    if last:
+        log("DEBUG", f"Last row raw: {last[:240]}")
     if mode == "q1":
         found, extra = match_rows_from_end(rows, users, monitor_at, window_min)
         log("INFO", f"Q1 sweep scanned={extra.get('scanned')} q1={extra.get('q1')}")
@@ -818,8 +921,9 @@ def wait_received_queue(
     clock = monitor_at.strftime("%H:%M")
     log(
         "INFO",
-        f"PASS: last row is {', '.join(names)} (day {needles[0]}, +/-{window_min} min of {clock}), "
-        f"then the row above is the other user. After {wait_sec}s, walk last->Q1 once.",
+        f"PASS: last v-grid row of {queue_name} is {', '.join(names)} "
+        f"(day {needles[0]}, +/-{window_min} min of {clock}), then the row above is the other. "
+        f"After {wait_sec}s, walk last->Q1 once. Ignore other v-grids (Users/Accounts).",
     )
     on_queue = open_received_pending_queue(driver, wait, queue_name)
 
@@ -835,7 +939,8 @@ def wait_received_queue(
             log("WARN", f"{elapsed_label}: still on '{shown}' — not scanning Received for PASS")
             return {u: False for u in names}
         click_refresh(driver)
-        time.sleep(3)
+        time.sleep(1.5)
+        wait_vgrid_rows(driver, timeout=10)
         scroll_queue_grid(driver)
         time.sleep(0.8)
         got = scan_queue(driver, names, monitor_at, window_min, mode)

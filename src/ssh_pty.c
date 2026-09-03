@@ -148,7 +148,7 @@ int ssh_pty_open(SshPty *s, const char *user, const char *host)
 
     if (pid == 0) {
         /* Child: exec OpenSSH so the host-key prompt behaves like a human session. */
-        char target[128];
+        char target[192];
         snprintf(target, sizeof(target), "%s@%s", user, host);
         execlp("ssh", "ssh",
                "-tt",
@@ -159,7 +159,7 @@ int ssh_pty_open(SshPty *s, const char *user, const char *host)
                "-o", "PubkeyAuthentication=no",
                "-o", "PreferredAuthentications=keyboard-interactive,password",
                "-o", "NumberOfPasswordPrompts=2",
-               "-o", "ConnectTimeout=15",
+               "-o", "ConnectTimeout=25",
                "-o", "ServerAliveInterval=5",
                "-o", "ServerAliveCountMax=3",
                target,

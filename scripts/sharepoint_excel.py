@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 """
-Fill 4 SharePoint Excel sheets (Voicelink 1/2, Fax 1/2) from today's daily_monitor.csv
-only (current calendar date, typically the latest 4 station rows). If any of those
-sheets already has that date (manual daily monitor), leave SharePoint unchanged.
+Fill SharePoint Excel sheets (Voicelink 1/2, Fax 1/2, Virtual 1/2) from
+today's daily_monitor.csv. Virtual sheets have no Voicelink/Fax Status column.
 """
 from __future__ import annotations
 
@@ -50,6 +49,16 @@ SHEETS = (
         "imei": "866758040526465",
         "names": ("Fax Station No. 2", "Fax Station No.2"),
         "status_header": "Fax Status",
+    },
+    {
+        "imei": "866834045868010",
+        "names": ("Virtual Station No. 1", "Virtual Station No.1"),
+        "status_header": "",
+    },
+    {
+        "imei": "866834041157558",
+        "names": ("Virtual Station No. 2", "Virtual Station No.2"),
+        "status_header": "",
     },
 )
 
@@ -168,17 +177,12 @@ def rec_field(rec: dict[str, str], *names: str) -> str:
 
 
 def csv_to_excel_values(rec: dict[str, str], status_header: str) -> dict[str, str]:
-    if status_header == "Voicelink Status":
-        status = "N/A"
-    else:
-        status = rec_field(rec, "Voicelink/Fax status", "Voicelink Status", "Fax Status")
-    return {
+    values = {
         "Date": rec_field(rec, "Date"),
         "Anydesk ID": rec_field(rec, "Anydesk ID"),
         "IMEI": rec_field(rec, "IMEI"),
         "Firmware Version": rec_field(rec, "Firmware Version"),
         EXCEL_UPTIME: rec_field(rec, "Uptime (hh:mm)", EXCEL_UPTIME, "Uptime (day:hh:mm)", "Uptime"),
-        status_header: status,
         "Carrier": rec_field(rec, "Carrier"),
         "Phone": rec_field(rec, "Phone"),
         "RSSI (dBm)": rec_field(rec, "RSSI (dBm)", "RSSI"),
@@ -186,6 +190,13 @@ def csv_to_excel_values(rec: dict[str, str], status_header: str) -> dict[str, st
         "SSH Access": rec_field(rec, "SSH Access"),
         "Note": rec_field(rec, "Note"),
     }
+    if status_header == "Voicelink Status":
+        values[status_header] = "N/A"
+    elif status_header:
+        values[status_header] = rec_field(
+            rec, "Voicelink/Fax status", "Voicelink Status", "Fax Status"
+        )
+    return values
 
 
 def find_header_row(ws, max_scan: int = 12) -> tuple[int, dict[str, int]]:
@@ -777,7 +788,7 @@ def apply_today_or_skip(
         return 0
     log("INFO", "Uploading workbook")
     upload(updated)
-    log("PASSED", "SharePoint Excel updated for 4 VN station sheets")
+    log("PASSED", "SharePoint Excel updated for VN + US station sheets")
     return 0
 
 
@@ -856,11 +867,11 @@ def main() -> int:
     csv_rows = read_today_csv(csv_path, today)
     wanted = [s["imei"] for s in SHEETS]
     have = [i for i in wanted if i in csv_rows]
-    log("INFO", f"CSV date {today.isoformat()}: {len(have)}/4 lab stations (today only, not older rows)")
+    log("INFO", f"CSV date {today.isoformat()}: {len(have)}/{len(wanted)} lab stations (today only, not older rows)")
     if dry_run:
         log("INFO", "Dry-run: will not upload to SharePoint")
     if not have:
-        log("ERROR", "No today's rows in CSV for the 4 VN stations")
+        log("ERROR", "No today's rows in CSV for the station IMEIs")
         return 1
 
     log("INFO", f"Microsoft login tenant={tenant}")

@@ -613,7 +613,7 @@ static const char *pick_gateway(void)
     return NULL;
 }
 
-static int collect_router(const Router *r, MonitorRow *row)
+static int collect_router_at(const Router *r, MonitorRow *row, const char *host)
 {
     char out[PTY_BUF_SIZE];
     SshPty ssh;
@@ -621,25 +621,22 @@ static int collect_router(const Router *r, MonitorRow *row)
     ssh.master_fd = -1;
     ssh.pid = -1;
 
-    ssh_delete_known_hosts();
-
-    const char *gw = pick_gateway();
-    if (!gw) {
-        log_msg("ERROR", "%s: gateway not reachable after WiFi join", r->name);
+    if (!host || !host[0]) {
+        log_msg("ERROR", "%s: no SSH host", r->name);
         snprintf(row->ssh_access, sizeof(row->ssh_access), "FAIL");
-        snprintf(row->wifi_sim_status, sizeof(row->wifi_sim_status), "FAIL");
         return -1;
     }
 
-    if (ssh_pty_open(&ssh, g_cfg.ssh_user, gw) != 0) {
-        log_msg("INFO", "%s: cannot open SSH (Dropbear off?) — skip", r->name);
+    ssh_delete_known_hosts();
+
+    if (ssh_pty_open(&ssh, g_cfg.ssh_user, host) != 0) {
+        log_msg("INFO", "%s: cannot open SSH to %s — skip", r->name, host);
         snprintf(row->ssh_access, sizeof(row->ssh_access), "FAIL");
         return -1;
     }
 
     if (ssh_pty_login(&ssh, r->password, g_cfg.ssh_timeout_sec) != 0) {
-        log_msg("INFO", "%s: SSH login failed (Dropbear off or wrong password) — skip",
-                r->name);
+        log_msg("INFO", "%s: SSH login failed (%s) — skip", r->name, host);
         snprintf(row->ssh_access, sizeof(row->ssh_access), "FAIL");
         ssh_pty_close(&ssh);
         return -1;
@@ -651,7 +648,7 @@ static int collect_router(const Router *r, MonitorRow *row)
         log_msg("INFO", "cellular status captured (%zu bytes)", strlen(out));
         fill_from_cellular(out, row);
         if (row->imei[0] && r->imei[0] && strcmp(row->imei, r->imei) != 0)
-            log_msg("WARN", "%s: IMEI mismatch (expected %s, got %s) — check WiFi SSID",
+            log_msg("WARN", "%s: IMEI mismatch (expected %s, got %s)",
                     r->name, r->imei, row->imei);
         snprintf(row->imei, sizeof(row->imei), "%s", r->imei);
     } else {
@@ -671,6 +668,33 @@ static int collect_router(const Router *r, MonitorRow *row)
 
     ssh_pty_close(&ssh);
     return 0;
+}
+
+static int collect_router(const Router *r, MonitorRow *row)
+{
+    const char *gw = pick_gateway();
+    if (!gw) {
+        log_msg("ERROR", "%s: gateway not reachable after WiFi join", r->name);
+        snprintf(row->ssh_access, sizeof(row->ssh_access), "FAIL");
+        snprintf(row->wifi_sim_status, sizeof(row->wifi_sim_status), "FAIL");
+        return -1;
+    }
+    return collect_router_at(r, row, gw);
+}
+
+static int collect_router_tailscale(const Router *r, MonitorRow *row)
+{
+    if (!r->ssh_host[0]) {
+        log_msg("WARN", "%s: ssh_host empty — set Tailscale MagicDNS or 100.x in monitor.conf",
+                r->name);
+        snprintf(row->ssh_access, sizeof(row->ssh_access), "FAIL");
+        snprintf(row->note, sizeof(row->note), "tailscale ssh_host not set");
+        return -1;
+    }
+    log_msg("INFO", "%s: Tailscale SSH %s@%s", r->name, g_cfg.ssh_user, r->ssh_host);
+    if (wait_ping(r->ssh_host, 15) != 0)
+        log_msg("WARN", "%s: ping %s failed — still trying SSH", r->name, r->ssh_host);
+    return collect_router_at(r, row, r->ssh_host);
 }
 
 static const char *python_bin(void)
@@ -948,7 +972,28 @@ static void fill_sharepoint_excel(void)
     if (rc != 0)
         log_msg("ERROR", "SharePoint Excel fill failed (exit %d)", rc);
     else
-        log_msg("PASSED", "SharePoint Excel updated (4 VN station sheets)");
+        log_msg("PASSED", "SharePoint Excel updated (VN + US station sheets)");
+}
+
+static void collect_us_via_jump(const char *conf_path)
+{
+    char cmd[1024];
+    const char *py;
+
+    if (!g_cfg.jump_host[0]) {
+        log_msg("INFO", "US jump_host empty — skip Virtual Station collect");
+        return;
+    }
+    py = python_bin();
+    snprintf(cmd, sizeof(cmd),
+             "PYTHONUNBUFFERED=1 %s scripts/us_jump_run.py --conf '%s' --csv '%s' 2>&1",
+             py, conf_path ? conf_path : "monitor.conf", g_cfg.output_csv);
+    int rc = run_python_stream(
+        "US Virtual Stations via Tailscale jump laptop (WiFi hop + SSH) ...", cmd);
+    if (rc != 0)
+        log_msg("ERROR", "US Virtual Station collect failed (exit %d)", rc);
+    else
+        log_msg("PASSED", "US Virtual Station collect finished");
 }
 
 static void restore_lab_wifi(void)
@@ -972,8 +1017,8 @@ static void usage(const char *argv0)
 {
     fprintf(stderr,
             "Usage: %s [-c monitor.conf]\n"
-            "  Raspberry Pi daily monitor: join each Simplifi router WiFi,\n"
-            "  SSH in, collect cellular/firmware/uptime/ping, write CSV.\n",
+            "  Raspberry Pi daily monitor: WiFi+SSH 4 VN routers, then US jump laptop\n"
+            "  hops Virtual Station WiFi over Tailscale, write CSV and fill SharePoint.\n",
             argv0);
 }
 
@@ -1021,9 +1066,16 @@ int main(int argc, char **argv)
         log_msg("WARN", "Could not join lab WiFi at start; continuing with router cycle");
     g_restore_lab = 1;
 
+    int vn_seen = 0;
+    int vn_ssh_ok = 1;
     for (int i = 0; i < g_cfg.router_count; i++) {
         Router *r = &g_cfg.routers[i];
         MonitorRow row;
+
+        if (router_is_tailscale(r))
+            continue;
+
+        vn_seen++;
         row_init(&row, r);
 
         log_msg("INFO", "----- [%d/%d] %s  IMEI=%s  SSID=%s -----",
@@ -1035,6 +1087,7 @@ int main(int argc, char **argv)
             snprintf(row.ssh_access, sizeof(row.ssh_access), "FAIL");
             snprintf(row.wifi_sim_status, sizeof(row.wifi_sim_status), "FAIL");
             csv_upsert(&row);
+            vn_ssh_ok = 0;
             continue;
         }
 
@@ -1044,6 +1097,8 @@ int main(int argc, char **argv)
         if (collect_router(r, &row) != 0)
             log_msg("INFO", "%s: Dropbear/SSH not available — skip this router, continue",
                     r->name);
+        if (strcmp(row.ssh_access, "PASS") != 0)
+            vn_ssh_ok = 0;
         csv_upsert(&row);
 
         log_msg("INFO", "%s done  SSH=%s  IMEI=%s  FW=%s  up=%s  vfax=%s  carrier=%s  rssi=%s  sim=%s",
@@ -1055,6 +1110,15 @@ int main(int argc, char **argv)
     }
 
     restore_lab_wifi();
+    sleep(5);
+
+    if (vn_seen && !vn_ssh_ok) {
+        log_msg("WARN",
+                "Skip US Virtual Station collect — Voicelink/Fax SSH did not all PASS");
+    } else {
+        collect_us_via_jump(conf_path);
+    }
+
     fetch_portal_logs();
     send_fax_stations();
     sync_to_laptop();

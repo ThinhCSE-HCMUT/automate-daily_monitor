@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <ctype.h>
 
 static void rstrip(char *s)
@@ -38,8 +39,12 @@ void config_set_defaults(Config *cfg)
     cfg->laptop_user[0] = '\0';
     copy_field(cfg->laptop_dest, sizeof(cfg->laptop_dest), "D:/daily_monitor_result");
     cfg->laptop_key[0] = '\0';
+    cfg->jump_host[0] = '\0';
+    cfg->jump_user[0] = '\0';
+    cfg->jump_restore_ssid[0] = '\0';
     cfg->wifi_timeout_sec = 45;
     cfg->ssh_timeout_sec = 25;
+    cfg->jump_wait_sec = 600;
     cfg->portal_logs = 1;
     cfg->fax_send = 1;
     cfg->laptop_sync = 1;
@@ -52,26 +57,40 @@ void config_set_defaults(Config *cfg)
     copy_field(cfg->routers[0].anydesk, sizeof(cfg->routers[0].anydesk), "1267941734");
     copy_field(cfg->routers[0].ssid, sizeof(cfg->routers[0].ssid), "Simplifi-3188");
     copy_field(cfg->routers[0].password, sizeof(cfg->routers[0].password), "5613EACF");
+    copy_field(cfg->routers[0].access, sizeof(cfg->routers[0].access), "wifi");
 
     copy_field(cfg->routers[1].name, sizeof(cfg->routers[1].name), "Voicelink Station No. 2");
     copy_field(cfg->routers[1].imei, sizeof(cfg->routers[1].imei), "861107035967513");
     copy_field(cfg->routers[1].anydesk, sizeof(cfg->routers[1].anydesk), "1267941734");
     copy_field(cfg->routers[1].ssid, sizeof(cfg->routers[1].ssid), "Simplifi-7513");
     copy_field(cfg->routers[1].password, sizeof(cfg->routers[1].password), "16415A35");
+    copy_field(cfg->routers[1].access, sizeof(cfg->routers[1].access), "wifi");
 
     copy_field(cfg->routers[2].name, sizeof(cfg->routers[2].name), "Fax Station No. 1");
     copy_field(cfg->routers[2].imei, sizeof(cfg->routers[2].imei), "861107035990853");
     copy_field(cfg->routers[2].anydesk, sizeof(cfg->routers[2].anydesk), "1484607357");
     copy_field(cfg->routers[2].ssid, sizeof(cfg->routers[2].ssid), "Simplifi-0853");
     copy_field(cfg->routers[2].password, sizeof(cfg->routers[2].password), "BAB1A756");
+    copy_field(cfg->routers[2].access, sizeof(cfg->routers[2].access), "wifi");
 
     copy_field(cfg->routers[3].name, sizeof(cfg->routers[3].name), "Fax Station No. 2");
     copy_field(cfg->routers[3].imei, sizeof(cfg->routers[3].imei), "866758040526465");
     copy_field(cfg->routers[3].anydesk, sizeof(cfg->routers[3].anydesk), "1628162772");
     copy_field(cfg->routers[3].ssid, sizeof(cfg->routers[3].ssid), "Simplifi-6465");
     copy_field(cfg->routers[3].password, sizeof(cfg->routers[3].password), "3BCF3F5A");
+    copy_field(cfg->routers[3].access, sizeof(cfg->routers[3].access), "wifi");
 
-    cfg->router_count = 4;
+    copy_field(cfg->routers[4].name, sizeof(cfg->routers[4].name), "Virtual Station No. 1");
+    copy_field(cfg->routers[4].imei, sizeof(cfg->routers[4].imei), "866834045868010");
+    copy_field(cfg->routers[4].anydesk, sizeof(cfg->routers[4].anydesk), "1818958765");
+    copy_field(cfg->routers[4].access, sizeof(cfg->routers[4].access), "tailscale");
+
+    copy_field(cfg->routers[5].name, sizeof(cfg->routers[5].name), "Virtual Station No. 2");
+    copy_field(cfg->routers[5].imei, sizeof(cfg->routers[5].imei), "866834041157558");
+    copy_field(cfg->routers[5].anydesk, sizeof(cfg->routers[5].anydesk), "1818958765");
+    copy_field(cfg->routers[5].access, sizeof(cfg->routers[5].access), "tailscale");
+
+    cfg->router_count = 6;
 }
 
 static int parse_router_key(const char *key, int *idx, char *field, size_t field_n)
@@ -166,6 +185,14 @@ int config_load(const char *path, Config *cfg)
             cfg->sharepoint_excel = atoi(val);
         else if (strcmp(key, "sharepoint_conf") == 0)
             copy_field(cfg->sharepoint_conf, sizeof(cfg->sharepoint_conf), val);
+        else if (strcmp(key, "jump_host") == 0)
+            copy_field(cfg->jump_host, sizeof(cfg->jump_host), val);
+        else if (strcmp(key, "jump_user") == 0)
+            copy_field(cfg->jump_user, sizeof(cfg->jump_user), val);
+        else if (strcmp(key, "jump_restore_ssid") == 0)
+            copy_field(cfg->jump_restore_ssid, sizeof(cfg->jump_restore_ssid), val);
+        else if (strcmp(key, "jump_wait_sec") == 0)
+            cfg->jump_wait_sec = atoi(val);
         else {
             int idx;
             char field[32];
@@ -188,9 +215,22 @@ int config_load(const char *path, Config *cfg)
                     copy_field(r->ssid, sizeof(r->ssid), val);
                 else if (strcmp(field, "password") == 0)
                     copy_field(r->password, sizeof(r->password), val);
+                else if (strcmp(field, "access") == 0)
+                    copy_field(r->access, sizeof(r->access), val);
+                else if (strcmp(field, "ssh_host") == 0)
+                    copy_field(r->ssh_host, sizeof(r->ssh_host), val);
             }
         }
     }
     fclose(fp);
     return 0;
+}
+
+int router_is_tailscale(const Router *r)
+{
+    if (!r)
+        return 0;
+    if (r->access[0] == '\0')
+        return 0;
+    return strcasecmp(r->access, "tailscale") == 0;
 }

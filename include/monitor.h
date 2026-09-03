@@ -12,6 +12,7 @@
 #define MAX_IMEI        32
 #define MAX_ANYDESK     24
 #define MAX_IP          32
+#define MAX_HOST        96
 #define MAX_IFACE       32
 #define MAX_PATH        256
 #define MAX_FIELD       128
@@ -24,6 +25,8 @@ typedef struct {
     char anydesk[MAX_ANYDESK];
     char ssid[MAX_SSID];
     char password[MAX_PASS];
+    char access[16];      /* wifi (default) or tailscale */
+    char ssh_host[MAX_HOST]; /* Tailscale MagicDNS or 100.x.x.x */
 } Router;
 
 typedef struct {
@@ -43,8 +46,12 @@ typedef struct {
     char laptop_user[MAX_NAME];
     char laptop_dest[MAX_PATH];
     char laptop_key[MAX_PATH];
+    char jump_host[MAX_HOST];
+    char jump_user[MAX_NAME];
+    char jump_restore_ssid[MAX_SSID];
     int  wifi_timeout_sec;
     int  ssh_timeout_sec;
+    int  jump_wait_sec;
     int  portal_logs;
     int  fax_send;
     int  laptop_sync;
@@ -92,6 +99,7 @@ int  wait_ping(const char *ip, int timeout_sec);
 /* config */
 int  config_load(const char *path, Config *cfg);
 void config_set_defaults(Config *cfg);
+int  router_is_tailscale(const Router *r);
 
 /* wifi (nmcli on Raspberry Pi OS) */
 int  wifi_current_ssid(char *ssid, size_t n);

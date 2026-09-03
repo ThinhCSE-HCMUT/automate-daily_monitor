@@ -1,0 +1,75 @@
+# Copy to monitor.conf on the Pi (chmod 600). monitor.conf is gitignored.
+
+lab_ssid_5g=Simplifi Lab 5Ghz
+lab_ssid_24g=Simplifi Lab 2.4Ghz
+lab_password=
+
+wifi_iface=wlan0
+router_gateway=192.168.2.1
+router_gateway_alt=192.168.10.1
+ssh_user=root
+
+wifi_timeout_sec=45
+ssh_timeout_sec=45
+
+output_csv=output/daily_monitor.csv
+log_file=output/monitor.log
+
+portal_logs=1
+portal_conf=portal.conf
+fax_send=1
+fax_conf=fax.conf
+laptop_sync=1
+laptop_host=voicelink
+sharepoint_excel=1
+sharepoint_conf=sharepoint.conf
+
+# US Windows jump laptop (same Tailscale tailnet as the Pi)
+jump_host=100.109.148.118
+jump_user=simplifi
+jump_restore_ssid=
+jump_wait_sec=600
+
+# VN: join each router WiFi then SSH 192.168.2.1
+router.0.name=Voicelink Station No. 1
+router.0.imei=866758040553188
+router.0.anydesk=1267941734
+router.0.ssid=Simplifi-3188
+router.0.access=wifi
+router.0.password=
+
+router.1.name=Voicelink Station No. 2
+router.1.imei=861107035967513
+router.1.anydesk=1267941734
+router.1.ssid=Simplifi-7513
+router.1.access=wifi
+router.1.password=
+
+router.2.name=Fax Station No. 1
+router.2.imei=861107035990853
+router.2.anydesk=1484607357
+router.2.ssid=Simplifi-0853
+router.2.access=wifi
+router.2.password=
+
+router.3.name=Fax Station No. 2
+router.3.imei=866758040526465
+router.3.anydesk=1628162772
+router.3.ssid=Simplifi-6465
+router.3.access=wifi
+router.3.password=
+
+# US: Pi SSHs to jump laptop; laptop hops each Virtual Station WiFi then SSH 192.168.2.1
+router.4.name=Virtual Station No. 1
+router.4.imei=866834045868010
+router.4.anydesk=1818958765
+router.4.access=tailscale
+router.4.ssid=
+router.4.password=
+
+router.5.name=Virtual Station No. 2
+router.5.imei=866834041157558
+router.5.anydesk=1818958765
+router.5.access=tailscale
+router.5.ssid=
+router.5.password=

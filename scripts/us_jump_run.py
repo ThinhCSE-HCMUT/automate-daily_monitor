@@ -104,6 +104,45 @@ def ping_host(host: str) -> bool:
     return r.returncode == 0
 
 
+def write_win_starters(win_dir: str, tmpdir: str) -> tuple[str, str]:
+    """Scripts that start the collector outside the OpenSSH job object."""
+    cmd_path = os.path.join(tmpdir, "start_collect.cmd")
+    ps_path = os.path.join(tmpdir, "start_jump.ps1")
+    with open(cmd_path, "w", encoding="ascii", newline="\r\n") as f:
+        f.write(
+            "@echo off\r\n"
+            f"cd /d {win_dir}\r\n"
+            "echo ===== start %DATE% %TIME% =====>> collect.log\r\n"
+            "py -3 us_jump_collect.py --job job.json >> collect.log 2>&1\r\n"
+        )
+    with open(ps_path, "w", encoding="utf-8", newline="\r\n") as f:
+        f.write(
+            f"$dir = '{win_dir}'\r\n"
+            "$line = 'cmd.exe /c \"' + $dir + '\\start_collect.cmd\"'\r\n"
+            "$r = ([wmiclass]'Win32_Process').Create($line, $dir)\r\n"
+            "if ($null -eq $r -or [int]$r.ReturnValue -ne 0) {\r\n"
+            "  Write-Output ('CREATE_FAIL ' + [string]$r.ReturnValue)\r\n"
+            "  exit 1\r\n"
+            "}\r\n"
+            "Write-Output ('STARTED pid=' + $r.ProcessId)\r\n"
+        )
+    return cmd_path, ps_path
+
+
+def remote_tail_log(user: str, host: str, win_dir: str) -> str:
+    r = run(
+        ssh_base(user, host)
+        + [
+            "powershell",
+            "-NoProfile",
+            "-Command",
+            f"if (Test-Path '{win_dir}\\collect.log') {{ Get-Content -Tail 8 '{win_dir}\\collect.log' }} else {{ 'NO_LOG' }}",
+        ],
+        timeout=25,
+    )
+    return ((r.stdout or "") + (r.stderr or "")).strip()
+
+
 def csv_day(stamp: str) -> str:
     s = (stamp or "").strip().strip('"')
     return s[:10]
@@ -164,7 +203,10 @@ def main() -> int:
     wait_sec = int(cfg.get("jump_wait_sec") or "600")
     stations = routers_from_conf(cfg)
     if not host:
-        log("WARN", "jump_host empty — skip US Virtual Stations")
+        log(
+            "WARN",
+            f"jump_host empty in {os.path.abspath(args.conf)} — add jump_host=100.x.x.x then retry",
+        )
         return 0
     if not stations:
         log("WARN", "No router.N.access=tailscale stations — skip US")
@@ -218,32 +260,48 @@ def main() -> int:
             return 1
     log("INFO", "Copied collector to US laptop")
     win_dir = remote_dir.replace("/", "\\")
+    cmd_path, ps_path = write_win_starters(win_dir, "output")
+    for src, dst in (
+        (cmd_path, f"{user}@{host}:{remote_dir}/start_collect.cmd"),
+        (ps_path, f"{user}@{host}:{remote_dir}/start_jump.ps1"),
+    ):
+        r = run(scp_base(user, host) + [src, dst], timeout=30)
+        if r.returncode != 0:
+            log("ERROR", f"scp starter failed: {(r.stderr or '')[:300]}")
+            return 1
+    run(
+        ssh_base(user, host) + ["cmd", "/c", f"del /f /q {win_dir}\\results.json"],
+        timeout=20,
+    )
+    # OpenSSH on Windows kills children when the session ends. Win32_Process.Create
+    # starts the collector outside that job so it can hop WiFi after SSH returns.
     start = run(
         ssh_base(user, host)
         + [
-            "cmd",
-            "/c",
-            "start",
-            "/min",
-            "py",
-            "-3",
-            f"{win_dir}\\us_jump_collect.py",
-            "--job",
-            f"{win_dir}\\job.json",
+            "powershell",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            f"{win_dir}\\start_jump.ps1",
         ],
         timeout=30,
     )
-    log("INFO", f"Started US WiFi-hop collector (ssh rc={start.returncode})")
-    log("INFO", f"Waiting up to {wait_sec}s for laptop Tailscale {host} to return")
+    started = ((start.stdout or "") + (start.stderr or "")).strip()
+    log("INFO", f"Started US WiFi-hop collector: {started or f'ssh rc={start.returncode}'}")
+    if start.returncode != 0 or "STARTED" not in started:
+        log("ERROR", "Could not detach collector on US laptop (Win32_Process.Create)")
+        return 1
+    log("INFO", f"Waiting up to {wait_sec}s for {win_dir}\\results.json")
 
     time.sleep(8)
     deadline = time.time() + wait_sec
     back = False
+    ticks = 0
     while time.time() < deadline:
         if ping_host(host):
             probe = run(ssh_base(user, host) + ["echo BACK"], timeout=20)
             if probe.returncode == 0 and "BACK" in (probe.stdout or ""):
-                # results.json exists?
                 chk = run(
                     ssh_base(user, host)
                     + ["cmd", "/c", f"if exist {win_dir}\\results.json echo HAS"],
@@ -253,11 +311,22 @@ def main() -> int:
                 if "HAS" in text:
                     back = True
                     break
-                log("INFO", "Laptop is back; collector still writing results ...")
+                ticks += 1
+                if ticks % 3 == 1:
+                    tail = remote_tail_log(user, host, win_dir)
+                    if tail and tail != "NO_LOG":
+                        log("INFO", f"collect.log: {tail.replace(chr(10), ' | ')}")
+                    else:
+                        log("INFO", "Laptop is back; collector log not written yet ...")
+                else:
+                    log("INFO", "Laptop is back; collector still writing results ...")
         time.sleep(8)
 
     if not back:
-        log("ERROR", "US laptop did not return results.json in time (Tailscale/WiFi restore?)")
+        tail = remote_tail_log(user, host, win_dir)
+        log("ERROR", "US laptop did not return results.json in time")
+        if tail:
+            log("ERROR", f"collect.log: {tail.replace(chr(10), ' | ')}")
         return 1
 
     local_results = os.path.join("output", "us_jump_results.json")

@@ -113,6 +113,26 @@ def prepare_day_dir(out_root: str, now: datetime) -> tuple[str, str]:
     return day_dir, file_prefix
 
 
+def prune_old_day_dirs(out_root: str, keep: int = 15) -> None:
+    base_dir = os.path.join(os.path.abspath(out_root), "routers_log")
+    if not os.path.isdir(base_dir):
+        return
+    dated_dirs: list[tuple[datetime, str]] = []
+    for name in os.listdir(base_dir):
+        path = os.path.join(base_dir, name)
+        if not os.path.isdir(path):
+            continue
+        try:
+            stamp = datetime.strptime(name, "%d_%m_%Y")
+        except ValueError:
+            continue
+        dated_dirs.append((stamp, path))
+    dated_dirs.sort(key=lambda x: x[0], reverse=True)
+    for _, old_path in dated_dirs[keep:]:
+        shutil.rmtree(old_path, ignore_errors=True)
+        log("INFO", f"Removed old router log folder {old_path}")
+
+
 def wait_for_download(folder: str, before: set[str], timeout: int = 90) -> str | None:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -141,21 +161,7 @@ def describe_el(el: WebElement) -> str:
 
 
 def dump_page(driver, out_dir: str, label: str) -> None:
-    os.makedirs(out_dir, exist_ok=True)
-    stamp = datetime.now().strftime("%H%M%S")
-    png = os.path.join(out_dir, f"debug_{label}_{stamp}.png")
-    html = os.path.join(out_dir, f"debug_{label}_{stamp}.html")
-    try:
-        driver.save_screenshot(png)
-        log("DEBUG", f"Screenshot: {png}")
-    except Exception as exc:
-        log("DEBUG", f"Screenshot failed: {exc}")
-    try:
-        with open(html, "w", encoding="utf-8") as f:
-            f.write(driver.page_source or "")
-        log("DEBUG", f"HTML dump: {html}")
-    except Exception as exc:
-        log("DEBUG", f"HTML dump failed: {exc}")
+    del out_dir
     try:
         log("DEBUG", f"URL={driver.current_url} title={driver.title!r}")
     except Exception:
@@ -574,7 +580,7 @@ def pick_suggestion(driver, imei: str) -> bool:
     return False
 
 
-def search_and_download(driver, _wait: WebDriverWait, imei: str, debug_dir: str) -> None:
+def search_and_download(driver, _wait: WebDriverWait, imei: str, _debug_dir: str) -> None:
     if on_2fa_page(driver):
         raise TimeoutException(f"Still on 2FA page, cannot search IMEI. URL={page_url(driver)}")
     log("INFO", f"Step 1/5 locate search box  URL={page_url(driver)}")
@@ -618,10 +624,10 @@ def search_and_download(driver, _wait: WebDriverWait, imei: str, debug_dir: str)
             break
         time.sleep(0.4)
     if not btn:
-        dump_page(driver, debug_dir, f"no_download_{imei}")
+        dump_page(driver, _debug_dir, f"no_download_{imei}")
         raise TimeoutException(
             "No Download button after search. "
-            "Check output/debug_no_download_*.png — search likely did not run."
+            "Search likely did not run or the page layout changed."
         )
     log("INFO", f"Step 4/5 Download button: {describe_el(btn)}")
 
@@ -676,8 +682,6 @@ def main() -> int:
     os.makedirs(args.out, exist_ok=True)
     now = datetime.now()
     download_dir, file_prefix = prepare_day_dir(args.out, now)
-    debug_dir = os.path.join(os.path.abspath(args.out), "debug")
-    os.makedirs(debug_dir, exist_ok=True)
     saved: list[str] = []
     chrome_profile = temp_profile("simplifi-chrome-portal")
 
@@ -698,7 +702,7 @@ def main() -> int:
         where = wait_post_login(driver, 25)
         if where == "2fa" or on_2fa_page(driver):
             if not complete_2fa(driver, totp_secret):
-                dump_page(driver, debug_dir, "2fa_failed")
+                dump_page(driver, "", "2fa_failed")
                 log("ERROR", "2FA failed — cannot open developer logs")
                 return 1
             time.sleep(1)
@@ -708,7 +712,7 @@ def main() -> int:
             where = wait_post_login(driver, 20)
             if where == "2fa" or on_2fa_page(driver):
                 if not complete_2fa(driver, totp_secret):
-                    dump_page(driver, debug_dir, "2fa_failed_retry")
+                    dump_page(driver, "", "2fa_failed_retry")
                     log("ERROR", "2FA failed on log page redirect")
                     return 1
 
@@ -716,21 +720,21 @@ def main() -> int:
         maybe_enter_iframe(driver)
         wait_log_search(driver, login_wait)
         if not on_log_page(driver):
-            dump_page(driver, debug_dir, "not_log_page")
+            dump_page(driver, "", "not_log_page")
             raise TimeoutException(
                 f"Expected developer/log, still at {page_url(driver)} — 2FA was not completed"
             )
         log("PASSED", "Log page ready")
-        dump_page(driver, debug_dir, "log_page_ready")
+        dump_page(driver, "", "log_page_ready")
 
         for name, imei in imeis:
             log("INFO", f"======== {name} ({imei}) ========")
             before = snapshot_files(download_dir)
             try:
-                search_and_download(driver, wait, imei, debug_dir)
+                search_and_download(driver, wait, imei, "")
             except Exception as exc:
                 log_exc(imei, exc)
-                dump_page(driver, debug_dir, f"fail_{imei}")
+                dump_page(driver, "", f"fail_{imei}")
                 if session_dead(exc):
                     log("ERROR", "Browser session died — stopping remaining IMEIs")
                     break
@@ -739,7 +743,7 @@ def main() -> int:
             path = wait_for_download(download_dir, before, timeout=90)
             if not path:
                 log("ERROR", f"Download timed out for {imei} — no new file in {download_dir}")
-                dump_page(driver, debug_dir, f"dl_timeout_{imei}")
+                dump_page(driver, "", f"dl_timeout_{imei}")
                 continue
             dest = os.path.join(download_dir, f"{file_prefix}_{imei}.log")
             if os.path.abspath(path) != os.path.abspath(dest):
@@ -751,12 +755,14 @@ def main() -> int:
     except Exception as exc:
         log_exc("portal", exc)
         try:
-            dump_page(driver, debug_dir, "fatal")
+            dump_page(driver, "", "fatal")
         except Exception:
             pass
         raise
     finally:
         driver.quit()
+
+    prune_old_day_dirs(args.out, keep=15)
 
     host = pi_ip()
     print("", flush=True)

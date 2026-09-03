@@ -194,12 +194,9 @@ def load_conf(path: str) -> dict[str, str]:
 
 def dump_shot(driver, label: str) -> None:
     try:
-        os.makedirs("output/debug", exist_ok=True)
-        png = os.path.join("output", "debug", f"fax_{label}_{datetime.now().strftime('%H%M%S')}.png")
-        driver.save_screenshot(png)
-        log("DEBUG", f"Screenshot: {png}  URL={driver.current_url}")
+        log("DEBUG", f"State snapshot: {label}  URL={driver.current_url}")
     except Exception as exc:
-        log("DEBUG", f"Screenshot failed: {exc}")
+        log("DEBUG", f"State snapshot failed: {exc}")
 
 
 def accept_alerts(driver) -> None:

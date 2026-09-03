@@ -17,7 +17,7 @@ from urllib.parse import urlparse
 
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter, range_boundaries
-from openpyxl.styles import Border, Side
+from openpyxl.styles import Alignment, Border, Side
 from openpyxl.styles.numbers import FORMAT_TEXT
 
 DATE_NUMBER_FORMAT = "m/d/yyyy"
@@ -27,6 +27,7 @@ THIN_BORDER = Border(
     top=Side(style="thin"),
     bottom=Side(style="thin"),
 )
+CELL_ALIGN = Alignment(horizontal="center", vertical="center")
 
 
 SHEETS = (
@@ -273,11 +274,13 @@ def write_date_cell(ws, row: int, col: int, value, fallback: date) -> None:
     cell.number_format = DATE_NUMBER_FORMAT
 
 
-def apply_row_borders(ws, row: int, start_col: int, end_col: int) -> None:
+def apply_row_style(ws, row: int, start_col: int, end_col: int) -> None:
     if start_col > end_col:
         start_col, end_col = end_col, start_col
     for c in range(start_col, end_col + 1):
-        ws.cell(row, c).border = THIN_BORDER
+        cell = ws.cell(row, c)
+        cell.border = THIN_BORDER
+        cell.alignment = CELL_ALIGN
 
 
 def write_cell(ws, row: int, col: int, value, force_text: bool) -> None:
@@ -372,7 +375,7 @@ def upsert_sheet(wb, spec: dict, rec: dict[str, str], today: date) -> str:
         return f"{ws.title}: already has {today.isoformat()} (complete)"
     note_col = col_for(mapping, "Note")
     end_col = note_col or (max(used_cols) if used_cols else date_col)
-    apply_row_borders(ws, target, date_col, end_col)
+    apply_row_style(ws, target, date_col, end_col)
     expand_tables(ws, target)
     if only_blank:
         return f"{ws.title} row {target} (filled {wrote} blank cells)"

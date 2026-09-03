@@ -20,10 +20,16 @@ import time
 from datetime import datetime
 from xml.sax.saxutils import escape
 
+_log_fp = None
+
 
 def log(level: str, msg: str) -> None:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{now}] [{level}] {msg}", flush=True)
+    line = f"[{now}] [{level}] {msg}"
+    print(line, flush=True)
+    if _log_fp:
+        _log_fp.write(line + "\n")
+        _log_fp.flush()
 
 
 def run(cmd: list[str], timeout: int = 60) -> subprocess.CompletedProcess:
@@ -261,10 +267,14 @@ def collect_one(job: dict, station: dict) -> dict:
 
 
 def main() -> int:
+    global _log_fp
     parser = argparse.ArgumentParser()
     parser.add_argument("--job", required=True)
     parser.add_argument("--out", default="")
     args = parser.parse_args()
+    job_dir = os.path.dirname(os.path.abspath(args.job)) or "."
+    log_path = os.path.join(job_dir, "collect.log")
+    _log_fp = open(log_path, "a", encoding="utf-8")
     with open(args.job, encoding="utf-8") as f:
         job = json.load(f)
     out_path = args.out or job.get("out") or os.path.join(os.path.dirname(args.job), "results.json")

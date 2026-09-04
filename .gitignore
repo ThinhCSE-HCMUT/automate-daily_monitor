@@ -8,7 +8,7 @@ fax.conf
 portal.conf
 token_cache.bin
 *.xlsx
-
+*.example
 __pycache__/
 *.pyc
 

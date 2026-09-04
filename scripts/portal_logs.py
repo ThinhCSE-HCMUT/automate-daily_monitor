@@ -69,6 +69,21 @@ def load_imeis(path: str) -> list[tuple[str, str]]:
     return rows
 
 
+def resolve_imeis(monitor_conf: str, imei_csv: str) -> list[tuple[str, str]]:
+    """Prefer monitor.conf stations; fall back to portal_imeis.csv."""
+    try:
+        from stations_lib import load_stations, portal_imei_rows
+
+        rows = portal_imei_rows(load_stations(monitor_conf))
+        if rows:
+            return rows
+    except Exception as exc:
+        log("WARN", f"Could not load stations from {monitor_conf}: {exc}")
+    if os.path.isfile(imei_csv):
+        return load_imeis(imei_csv)
+    return []
+
+
 def build_driver(download_dir: str, headed: bool, profile: str | None = None):
     if not profile:
         profile = temp_profile("simplifi-chrome-portal")
@@ -652,6 +667,7 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--conf", default="portal.conf")
     parser.add_argument("--out", default="output")
+    parser.add_argument("--monitor-conf", default="monitor.conf")
     parser.add_argument("--imei-csv", default="scripts/portal_imeis.csv")
     parser.add_argument("--headed", action="store_true")
     args = parser.parse_args()
@@ -670,14 +686,12 @@ def main() -> int:
     if not totp_secret:
         log("ERROR", f"Fill totp_secret= in {args.conf} (STG 2FA)")
         return 2
-    if not os.path.isfile(args.imei_csv):
-        log("ERROR", f"IMEI list not found: {args.imei_csv}")
-        return 2
 
-    imeis = load_imeis(args.imei_csv)
+    imeis = resolve_imeis(args.monitor_conf, args.imei_csv)
     if not imeis:
-        log("ERROR", f"No IMEIs in {args.imei_csv}")
+        log("ERROR", f"No IMEIs in {args.monitor_conf} or {args.imei_csv}")
         return 2
+    log("INFO", f"Portal IMEI list from {'monitor.conf' if os.path.isfile(args.monitor_conf) else args.imei_csv}: {len(imeis)} station(s)")
 
     os.makedirs(args.out, exist_ok=True)
     now = datetime.now()

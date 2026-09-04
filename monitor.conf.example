@@ -17,6 +17,10 @@ log_file=output/monitor.log
 
 portal_logs=1
 portal_conf=portal.conf
+
+# AI analysis of portal logs -> CSV Note column. Needs: pip install cursor-sdk
+log_analysis=1
+cursor_api_key=
 fax_send=1
 fax_conf=fax.conf
 laptop_sync=1
@@ -30,13 +34,16 @@ jump_user=simplifi
 jump_restore_ssid=
 jump_wait_sec=600
 
-# VN: join each router WiFi then SSH 192.168.2.1
+# Stations (portal + SharePoint read these too — no need to edit portal_imeis.csv / SHEETS)
+# status_header: "Voicelink Status" | "Fax Status" | empty for Virtual
+# fax_user: Faxback queue user for that station (Fax only)
 router.0.name=Voicelink Station No. 1
 router.0.imei=866758040553188
 router.0.anydesk=1267941734
 router.0.ssid=Simplifi-3188
 router.0.access=wifi
 router.0.password=
+router.0.status_header=Voicelink Status
 
 router.1.name=Voicelink Station No. 2
 router.1.imei=861107035967513
@@ -44,6 +51,7 @@ router.1.anydesk=1267941734
 router.1.ssid=Simplifi-7513
 router.1.access=wifi
 router.1.password=
+router.1.status_header=Voicelink Status
 
 router.2.name=Fax Station No. 1
 router.2.imei=861107035990853
@@ -51,6 +59,8 @@ router.2.anydesk=1484607357
 router.2.ssid=Simplifi-0853
 router.2.access=wifi
 router.2.password=
+router.2.status_header=Fax Status
+router.2.fax_user=simplifivn1
 
 router.3.name=Fax Station No. 2
 router.3.imei=866758040526465
@@ -58,14 +68,16 @@ router.3.anydesk=1628162772
 router.3.ssid=Simplifi-6465
 router.3.access=wifi
 router.3.password=
+router.3.status_header=Fax Status
+router.3.fax_user=simplifivn2
 
-# US: Pi SSHs to jump laptop; laptop hops each Virtual Station WiFi then SSH 192.168.2.1
 router.4.name=Virtual Station No. 1
 router.4.imei=866834045868010
 router.4.anydesk=1818958765
 router.4.access=tailscale
 router.4.ssid=
 router.4.password=
+router.4.status_header=
 
 router.5.name=Virtual Station No. 2
 router.5.imei=866834041157558
@@ -73,3 +85,4 @@ router.5.anydesk=1818958765
 router.5.access=tailscale
 router.5.ssid=
 router.5.password=
+router.5.status_header=

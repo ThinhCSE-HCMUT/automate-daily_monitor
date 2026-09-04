@@ -53,6 +53,7 @@ typedef struct {
     int  ssh_timeout_sec;
     int  jump_wait_sec;
     int  portal_logs;
+    int  log_analysis;
     int  fax_send;
     int  laptop_sync;
     int  sharepoint_excel;

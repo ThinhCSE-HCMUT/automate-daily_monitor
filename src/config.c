@@ -46,6 +46,7 @@ void config_set_defaults(Config *cfg)
     cfg->ssh_timeout_sec = 25;
     cfg->jump_wait_sec = 600;
     cfg->portal_logs = 1;
+    cfg->log_analysis = 1;
     cfg->fax_send = 1;
     cfg->laptop_sync = 1;
     cfg->sharepoint_excel = 1;
@@ -165,6 +166,8 @@ int config_load(const char *path, Config *cfg)
             copy_field(cfg->portal_conf, sizeof(cfg->portal_conf), val);
         else if (strcmp(key, "portal_logs") == 0)
             cfg->portal_logs = atoi(val);
+        else if (strcmp(key, "log_analysis") == 0)
+            cfg->log_analysis = atoi(val);
         else if (strcmp(key, "fax_conf") == 0)
             copy_field(cfg->fax_conf, sizeof(cfg->fax_conf), val);
         else if (strcmp(key, "fax_send") == 0)

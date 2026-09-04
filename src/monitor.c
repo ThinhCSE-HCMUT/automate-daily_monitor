@@ -730,7 +730,7 @@ static int run_python_stream(const char *what, const char *cmd)
     return -1;
 }
 
-static void fetch_portal_logs(void)
+static void fetch_portal_logs(const char *conf_path)
 {
     char cmd[1024];
     const char *py;
@@ -750,14 +750,34 @@ static void fetch_portal_logs(void)
         log_msg("WARN", "No .venv found — using system python3. Run: make deps");
 
     snprintf(cmd, sizeof(cmd),
-             "PYTHONUNBUFFERED=1 %s scripts/portal_logs.py --conf '%s' --out output "
-             "--imei-csv scripts/portal_imeis.csv 2>&1",
-             py, g_cfg.portal_conf);
+             "PYTHONUNBUFFERED=1 %s scripts/portal_logs.py --conf '%s' --monitor-conf '%s' "
+             "--out output --imei-csv scripts/portal_imeis.csv 2>&1",
+             py, g_cfg.portal_conf, conf_path ? conf_path : "monitor.conf");
     int rc = run_python_stream("Downloading Simplifi Portal developer logs ...", cmd);
     if (rc != 0)
         log_msg("ERROR", "Portal log download failed (exit %d)", rc);
     else
         log_msg("PASSED", "Portal logs saved under output/routers_log/");
+}
+
+static void analyze_router_logs(const char *conf_path)
+{
+    char cmd[1024];
+    const char *py;
+
+    if (!g_cfg.log_analysis) {
+        log_msg("INFO", "Router log AI analysis disabled (log_analysis=0)");
+        return;
+    }
+    py = python_bin();
+    snprintf(cmd, sizeof(cmd),
+             "PYTHONUNBUFFERED=1 %s scripts/analyze_router_logs.py --conf '%s' --csv '%s' 2>&1",
+             py, conf_path ? conf_path : "monitor.conf", g_cfg.output_csv);
+    int rc = run_python_stream("Analyzing today's router logs with Cursor agent ...", cmd);
+    if (rc != 0)
+        log_msg("WARN", "Router log analysis exited %d — Note column left as-is", rc);
+    else
+        log_msg("PASSED", "Router log analysis finished (see CSV Note column)");
 }
 
 static void chrome_cleanup(void)
@@ -946,7 +966,7 @@ static void sync_to_laptop(void)
     }
 }
 
-static void fill_sharepoint_excel(void)
+static void fill_sharepoint_excel(const char *conf_path)
 {
     char cmd[1024];
     const char *py;
@@ -966,8 +986,9 @@ static void fill_sharepoint_excel(void)
 
     py = python_bin();
     snprintf(cmd, sizeof(cmd),
-             "PYTHONUNBUFFERED=1 %s scripts/sharepoint_excel.py --conf '%s' --csv '%s' 2>&1",
-             py, g_cfg.sharepoint_conf, g_cfg.output_csv);
+             "PYTHONUNBUFFERED=1 %s scripts/sharepoint_excel.py --conf '%s' --monitor-conf '%s' "
+             "--csv '%s' 2>&1",
+             py, g_cfg.sharepoint_conf, conf_path ? conf_path : "monitor.conf", g_cfg.output_csv);
     int rc = run_python_stream("Filling SharePoint monitoring Excel from today's CSV ...", cmd);
     if (rc != 0)
         log_msg("ERROR", "SharePoint Excel fill failed (exit %d)", rc);
@@ -1119,10 +1140,11 @@ int main(int argc, char **argv)
         collect_us_via_jump(conf_path);
     }
 
-    fetch_portal_logs();
+    fetch_portal_logs(conf_path);
+    analyze_router_logs(conf_path);
     send_fax_stations();
     sync_to_laptop();
-    fill_sharepoint_excel();
+    fill_sharepoint_excel(conf_path);
     log_msg("INFO", "=== Simplifi daily monitor finished ===");
     if (g_log)
         fclose(g_log);

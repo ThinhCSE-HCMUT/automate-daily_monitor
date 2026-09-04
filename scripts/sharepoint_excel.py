@@ -30,7 +30,7 @@ THIN_BORDER = Border(
 CELL_ALIGN = Alignment(horizontal="center", vertical="center")
 
 
-SHEETS = (
+SHEETS_FALLBACK = (
     {
         "imei": "866758040553188",
         "names": ("Voicelink Station No. 1", "Voicelink Station No.1"),
@@ -62,6 +62,18 @@ SHEETS = (
         "status_header": "",
     },
 )
+
+
+def resolve_sheets(monitor_conf: str):
+    try:
+        from stations_lib import load_stations, sheets_specs
+
+        specs = sheets_specs(load_stations(monitor_conf))
+        if specs:
+            return specs
+    except Exception as exc:
+        log("WARN", f"Could not load SharePoint sheets from {monitor_conf}: {exc}")
+    return list(SHEETS_FALLBACK)
 
 def log(level: str, msg: str) -> None:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -777,9 +789,10 @@ def apply_today_or_skip(
     dry_run: bool,
     out_xlsx: str,
     upload,
+    sheets: list | None = None,
 ) -> int:
     """Fill new rows or blank cells (e.g. Uptime). Skip upload if nothing changed."""
-    updated, changed = fill_workbook(raw, csv_rows, today)
+    updated, changed = fill_workbook(raw, csv_rows, today, sheets=sheets)
     if changed == 0:
         log(
             "PASSED",
@@ -795,12 +808,17 @@ def apply_today_or_skip(
     return 0
 
 
-def fill_workbook(data: bytes, csv_rows: dict[str, dict[str, str]], today: date) -> tuple[bytes, int]:
+def fill_workbook(
+    data: bytes,
+    csv_rows: dict[str, dict[str, str]],
+    today: date,
+    sheets: list | None = None,
+) -> tuple[bytes, int]:
     wb = load_workbook(io.BytesIO(data))
     log("INFO", f"Workbook sheets: {', '.join(wb.sheetnames)}")
     ok = 0
     changed = 0
-    for spec in SHEETS:
+    for spec in sheets or SHEETS_FALLBACK:
         rec = csv_rows.get(spec["imei"])
         if not rec:
             log("WARN", f"No CSV row today for IMEI {spec['imei']} ({spec['names'][0]}) — skip sheet")
@@ -826,6 +844,7 @@ def fill_workbook(data: bytes, csv_rows: dict[str, dict[str, str]], today: date)
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--conf", default="sharepoint.conf")
+    parser.add_argument("--monitor-conf", default="monitor.conf")
     parser.add_argument("--csv", default="output/daily_monitor.csv")
     parser.add_argument(
         "--dry-run",
@@ -868,7 +887,8 @@ def main() -> int:
         return 2
 
     csv_rows = read_today_csv(csv_path, today)
-    wanted = [s["imei"] for s in SHEETS]
+    sheets = resolve_sheets(args.monitor_conf)
+    wanted = [s["imei"] for s in sheets]
     have = [i for i in wanted if i in csv_rows]
     log("INFO", f"CSV date {today.isoformat()}: {len(have)}/{len(wanted)} lab stations (today only, not older rows)")
     if dry_run:
@@ -908,6 +928,7 @@ def main() -> int:
                 return apply_today_or_skip(
                     raw, csv_rows, today, dry_run, out_xlsx,
                     lambda data: upload_drive_item(token, drive_id, item_id, api_root, data),
+                    sheets=sheets,
                 )
 
         last = None
@@ -941,6 +962,7 @@ def main() -> int:
         return apply_today_or_skip(
             raw, csv_rows, today, dry_run, out_xlsx,
             lambda data: upload_by_path(ctx, rel_path, data),
+            sheets=sheets,
         )
     except Exception as exc:
         log("ERROR", f"{type(exc).__name__}: {exc}")

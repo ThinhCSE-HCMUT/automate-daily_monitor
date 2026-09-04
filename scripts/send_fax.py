@@ -991,6 +991,16 @@ def main() -> int:
     refresh_sec = int(cfg.get("queue_refresh_sec") or "30")
     queue_name = cfg.get("queue_name") or "ReceivedPendingDeletion"
     queue_users = parse_queue_users(cfg.get("fax_users") or "")
+    if not queue_users:
+        try:
+            from stations_lib import fax_users_from_stations, load_stations
+
+            derived = fax_users_from_stations(load_stations("monitor.conf"))
+            queue_users = parse_queue_users(derived)
+            if queue_users:
+                log("INFO", f"fax_users derived from monitor.conf stations: {derived}")
+        except Exception:
+            pass
     status_path = cfg.get("status_file") or args.status_file
     window_min = int(cfg.get("queue_time_window_min") or str(DEFAULT_WINDOW_MIN))
     monitor_at = datetime.now()

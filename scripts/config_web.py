@@ -43,9 +43,45 @@ MONITOR_KEYS = (
     "cursor_api_key",
 )
 
+FIELD_LABELS = {
+    "name": "Name",
+    "imei": "IMEI",
+    "anydesk": "Anydesk ID",
+    "ssid": "WiFi SSID",
+    "password": "Password",
+    "access": "Access (wifi / tailscale)",
+    "sheet": "SharePoint sheet",
+    "sheet_alt": "Sheet name (alt)",
+    "status_header": "Status column",
+    "fax_user": "Fax queue user",
+    "email": "Email",
+    "totp_secret": "TOTP secret (2FA)",
+    "portal_url": "Portal URL",
+    "username": "Username",
+    "url": "URL",
+    "fax_numbers": "Fax numbers",
+    "fax_users": "Fax users (user:imei,...)",
+    "attach": "Attach file path",
+    "tenant": "Tenant",
+    "site_url": "Site URL",
+    "file_url": "Excel file URL",
+    "file_name": "Excel file name",
+    "token_cache": "Token cache file",
+    "lab_ssid_5g": "Lab WiFi 5 GHz",
+    "lab_ssid_24g": "Lab WiFi 2.4 GHz",
+    "lab_password": "Lab WiFi password",
+    "jump_host": "US jump host (Tailscale IP)",
+    "jump_user": "US jump SSH user",
+    "cursor_api_key": "Cursor API key",
+}
+
 
 def esc(v: str) -> str:
     return html.escape(v or "", quote=True)
+
+
+def friendly_label(key: str) -> str:
+    return FIELD_LABELS.get(key, key.replace("_", " ").title())
 
 
 def is_secret(key: str) -> bool:
@@ -63,11 +99,11 @@ def input_row(name: str, value: str, secret: bool = False, label: str | None = N
             <input type="password" name="{esc(name)}" value="{esc(value)}"
                    autocomplete="off" spellcheck="false">
             <button type="button" class="eye-btn" aria-label="Show password"
-                    onclick="togglePw(this)" title="Show / hide">
+                    onclick="togglePw(this)" title="Show password">
               <svg class="icon-eye" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
                 <path fill="currentColor" d="M12 5c-7 0-10 7-10 7s3 7 10 7 10-7 10-7-3-7-10-7zm0 12a5 5 0 1 1 0-10 5 5 0 0 1 0 10zm0-8a3 3 0 1 0 0 6 3 3 0 0 0 0-6z"/>
               </svg>
-              <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" hidden>
+              <svg class="icon-eye-off" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
                 <path fill="currentColor" d="M2.1 3.5 3.5 2.1l18.4 18.4-1.4 1.4-3.1-3.1A12.6 12.6 0 0 1 12 19c-7 0-10-7-10-7a20.3 20.3 0 0 1 5.2-5.5L2.1 3.5zM12 7a5 5 0 0 1 5 5c0 .6-.1 1.1-.3 1.6l-6.3-6.3c.5-.2 1-.3 1.6-.3zm-7.5 5s2.2 4.5 7.5 4.5c.9 0 1.7-.1 2.4-.4l-1.6-1.6A3 3 0 0 1 9.5 11L6.8 8.3A17 17 0 0 0 4.5 12z"/>
               </svg>
             </button>
@@ -101,7 +137,9 @@ def station_card(i: int, st: dict[str, str]) -> str:
             val = st.get("name") or ""
         if key == "status_header" and val is None:
             val = default_status_header(st.get("name") or "")
-        rows.append(input_row(f"st_{i}_{key}", val, secret=secret))
+        rows.append(
+            input_row(f"st_{i}_{key}", val, secret=secret, label=friendly_label(key))
+        )
     title = esc(st.get("name") or f"Station {i}")
     return f"""
     <article class="station-card">
@@ -118,7 +156,13 @@ def station_card(i: int, st: dict[str, str]) -> str:
 
 def fields_block(prefix: str, keys: tuple[str, ...], cfg: dict[str, str]) -> str:
     return "".join(
-        input_row(f"{prefix}_{key}", cfg.get(key) or "", secret=is_secret(key)) for key in keys
+        input_row(
+            f"{prefix}_{key}",
+            cfg.get(key) or "",
+            secret=is_secret(key),
+            label=friendly_label(key),
+        )
+        for key in keys
     )
 
 
@@ -299,6 +343,9 @@ input[type=text]:focus, input[type=password]:focus {{
   transition: background .15s ease, color .15s ease;
 }}
 .eye-btn:hover {{ background: #eaf2ff; color: var(--accent-2); }}
+.eye-btn .icon-eye-off {{ display: none; }}
+.eye-btn.is-visible .icon-eye {{ display: none; }}
+.eye-btn.is-visible .icon-eye-off {{ display: block; }}
 .check {{
   display: flex;
   align-items: center;
@@ -359,18 +406,17 @@ input[type=text]:focus, input[type=password]:focus {{
 <body>
 <div class="wrap">
   <header class="hero">
-    <h1>Simplifi daily_monitor config</h1>
-    <p>On-demand UI — stop the server (Ctrl+C) when finished. Save writes conf files; no <code>make</code> needed.</p>
+    <h1>Simplifi Daily Monitor Settings</h1>
   </header>
   {msg}
   <form method="POST" action="/save" id="cfg-form">
     <input type="hidden" name="active_tab" id="active_tab" value="{esc(tab)}">
     <nav class="tabs" aria-label="Config sections">
-      {tab_btn("stations", "1 · Stations")}
-      {tab_btn("portal", "2 · Portal")}
-      {tab_btn("fax", "3 · Fax")}
-      {tab_btn("sharepoint", "4 · SharePoint")}
-      {tab_btn("lab", "5 · Lab / Jump")}
+      {tab_btn("stations", "Stations")}
+      {tab_btn("portal", "Portal")}
+      {tab_btn("fax", "Fax")}
+      {tab_btn("sharepoint", "SharePoint")}
+      {tab_btn("lab", "Lab / Jump")}
     </nav>
 
     <section class="panel{' active' if tab == 'stations' else ''}" id="tab-stations">
@@ -399,7 +445,7 @@ input[type=text]:focus, input[type=password]:focus {{
 
     <div class="actions">
       <button type="submit" class="btn btn-primary">Save all</button>
-      <button type="submit" name="reload" value="1" class="btn btn-secondary" formnovalidate>Reload from disk</button>
+      <button type="submit" name="restore_defaults" value="1" class="btn btn-secondary" formnovalidate>Restore Default Settings</button>
     </div>
   </form>
 </div>
@@ -419,9 +465,9 @@ function togglePw(btn) {{
   const input = wrap.querySelector('input');
   const show = input.type === 'password';
   input.type = show ? 'text' : 'password';
-  btn.querySelector('.icon-eye').hidden = show;
-  btn.querySelector('.icon-eye-off').hidden = !show;
+  btn.classList.toggle('is-visible', show);
   btn.setAttribute('aria-label', show ? 'Hide password' : 'Show password');
+  btn.title = show ? 'Hide password' : 'Show password';
 }}
 (function () {{
   const fromHash = (location.hash || '').replace('#', '');
@@ -528,8 +574,8 @@ class Handler(BaseHTTPRequestHandler):
         raw = self.rfile.read(length).decode("utf-8", errors="replace")
         form = parse_qs(raw, keep_blank_values=True)
         active = (form.get("active_tab") or ["stations"])[0]
-        if form.get("reload", [""])[0]:
-            msg = "Reloaded from disk (not saved)."
+        if form.get("restore_defaults", [""])[0] or form.get("reload", [""])[0]:
+            msg = "Restored values from saved config files on disk (form edits discarded)."
         else:
             try:
                 msg = save_form(form)

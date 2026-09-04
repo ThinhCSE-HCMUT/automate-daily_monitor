@@ -36,7 +36,7 @@ ROUTER_FIELDS = (
 # Flat conf keys the wizard/web may edit (not full conf — skips rarely-changed knobs).
 PORTAL_KEYS = ("email", "password", "totp_secret", "portal_url")
 FAX_KEYS = ("username", "password", "url", "fax_numbers", "fax_users", "attach")
-SHAREPOINT_KEYS = ("username", "password", "tenant", "site_url", "file_url", "file_name", "token_cache")
+SHAREPOINT_KEYS = ("username", "password", "tenant", "site_url", "file_url", "file_name")
 
 
 def load_conf(path: str) -> dict[str, str]:

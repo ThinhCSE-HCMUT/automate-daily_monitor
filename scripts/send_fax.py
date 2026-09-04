@@ -294,10 +294,11 @@ def page_has(driver, *needles: str) -> bool:
 
 def wait_attachment_listed(driver, filename: str, timeout: int = 25) -> bool:
     base = os.path.basename(filename)
+    stem, ext = os.path.splitext(base)
     deadline = time.time() + timeout
     while time.time() < deadline:
         accept_alerts(driver)
-        if page_has(driver, base, "fax_message", ".txt"):
+        if page_has(driver, base, stem, ext, "fax_message", ".txt", ".pdf"):
             return True
         time.sleep(0.5)
     return False
@@ -1012,11 +1013,18 @@ def main() -> int:
         return 2
 
     log("INFO", f"cwd={os.getcwd()}")
-    attach_abs = write_fax_txt(attach)
+    attach = cfg.get("attach") or "scripts/fax_message.txt"
+    attach_norm = attach.replace("\\", "/")
+    # Only regenerate the built-in daily fax_message.txt. User uploads are used as-is.
+    if attach_norm == "scripts/fax_message.txt" or attach_norm.endswith("/fax_message.txt"):
+        attach_abs = write_fax_txt(attach)
+    else:
+        attach_abs = os.path.abspath(attach)
     if not os.path.isfile(attach_abs):
         log("ERROR", f"Attachment missing: {attach_abs}")
         write_status(status_path, found, queue_users)
         return 2
+    log("INFO", f"Fax attachment: {attach_abs} ({os.path.getsize(attach_abs)} bytes)")
 
     log("INFO", f"Opening Faxback {url}  headless={not headed}")
     log("INFO", f"Recipients: {', '.join(numbers)}")

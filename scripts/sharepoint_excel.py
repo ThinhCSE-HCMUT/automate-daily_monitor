@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """
-Fill SharePoint Excel sheets (Voicelink 1/2, Fax 1/2, Virtual 1/2) from
-today's daily_monitor.csv. Virtual sheets have no Voicelink/Fax Status column.
+Fill SharePoint Excel sheets (Voicelink / Fax / Virtual) from today's
+daily_monitor.csv using Microsoft Graph Excel APIs (in-place cell updates).
+
+Does not download/replace the whole .xlsx (avoids HTTP 423 file locks when
+someone else has the workbook open). Dry-run still downloads locally.
 """
 from __future__ import annotations
 
@@ -12,8 +15,9 @@ import io
 import json
 import os
 import sys
-from datetime import date, datetime
-from urllib.parse import urlparse
+import time
+from datetime import date, datetime, timedelta
+from urllib.parse import quote, urlparse
 
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter, range_boundaries
@@ -28,6 +32,8 @@ THIN_BORDER = Border(
     bottom=Side(style="thin"),
 )
 CELL_ALIGN = Alignment(horizontal="center", vertical="center")
+# Excel serial date epoch (Lotus 1900 bug compatible with Excel).
+_EXCEL_EPOCH = date(1899, 12, 30)
 
 
 SHEETS_FALLBACK = (
@@ -667,6 +673,455 @@ def upload_drive_item(token: str, drive_id: str, item_id: str, api_root: str, da
     )
 
 
+def excel_serial(day: date) -> float:
+    return float((day - _EXCEL_EPOCH).days)
+
+
+def graph_excel_base(drive_id: str, item_id: str) -> str:
+    return f"https://graph.microsoft.com/v1.0/drives/{drive_id}/items/{item_id}/workbook"
+
+
+def graph_excel_request(
+    token: str,
+    method: str,
+    url: str,
+    session_id: str | None = None,
+    **kwargs,
+):
+    import requests
+
+    headers = dict(kwargs.pop("headers", {}) or {})
+    headers["Authorization"] = f"Bearer {token}"
+    headers.setdefault("Accept", "application/json")
+    if session_id:
+        headers["Workbook-Session-Id"] = session_id
+    if "json" in kwargs and "Content-Type" not in headers:
+        headers["Content-Type"] = "application/json"
+    resp = requests.request(method, url, headers=headers, timeout=120, **kwargs)
+    if resp.status_code >= 400:
+        raise RuntimeError(f"{method} {url} HTTP {resp.status_code}: {resp.text[:500]}")
+    if resp.status_code == 204 or not resp.content:
+        return None
+    try:
+        return resp.json()
+    except Exception:
+        return None
+
+
+def create_workbook_session(token: str, drive_id: str, item_id: str, persist: bool = True) -> str:
+    url = f"{graph_excel_base(drive_id, item_id)}/createSession"
+    payload = graph_excel_request(
+        token, "POST", url, json={"persistChanges": persist}
+    ) or {}
+    sid = payload.get("id")
+    if not sid:
+        raise RuntimeError(f"createSession missing id: {payload}")
+    return sid
+
+
+def close_workbook_session(token: str, drive_id: str, item_id: str, session_id: str) -> None:
+    url = f"{graph_excel_base(drive_id, item_id)}/closeSession"
+    try:
+        graph_excel_request(token, "POST", url, session_id=session_id, json={})
+    except Exception as exc:
+        log("DEBUG", f"closeSession: {exc}")
+
+
+def list_worksheet_names(token: str, drive_id: str, item_id: str, session_id: str) -> list[str]:
+    url = f"{graph_excel_base(drive_id, item_id)}/worksheets?$select=name,position"
+    payload = graph_excel_request(token, "GET", url, session_id=session_id) or {}
+    items = payload.get("value") or []
+    items = sorted(items, key=lambda x: x.get("position", 0))
+    return [str(x.get("name") or "") for x in items if x.get("name")]
+
+
+def resolve_sheet_name(names_available: list[str], wanted: tuple[str, ...]) -> str | None:
+    exact = {n.lower(): n for n in names_available}
+    for name in wanted:
+        if name in names_available:
+            return name
+        hit = exact.get(name.lower())
+        if hit:
+            return hit
+    for sheet_name in names_available:
+        low = sheet_name.lower()
+        if any(n.lower() in low or low in n.lower() for n in wanted):
+            return sheet_name
+    return None
+
+
+def worksheet_used_range(
+    token: str, drive_id: str, item_id: str, session_id: str, sheet_name: str
+) -> tuple[list[list], int, int]:
+    """Return (values matrix 0-index, row_count, column_count)."""
+    enc = quote(sheet_name, safe="")
+    url = (
+        f"{graph_excel_base(drive_id, item_id)}/worksheets('{enc}')/"
+        f"usedRange(valuesOnly=true)?$select=values,rowCount,columnCount,address"
+    )
+    payload = graph_excel_request(token, "GET", url, session_id=session_id) or {}
+    values = payload.get("values") or []
+    rows = int(payload.get("rowCount") or len(values) or 0)
+    cols = int(payload.get("columnCount") or (len(values[0]) if values else 0))
+    # Normalize ragged rows
+    matrix: list[list] = []
+    for r in range(rows):
+        row = list(values[r]) if r < len(values) else []
+        if len(row) < cols:
+            row.extend([None] * (cols - len(row)))
+        matrix.append(row[:cols] if cols else row)
+    return matrix, rows, cols
+
+
+def find_header_row_matrix(matrix: list[list], max_scan: int = 12) -> tuple[int, dict[str, int]]:
+    """Return 0-based header row index and mapping norm_header -> 0-based col."""
+    best_i = 0
+    best_map: dict[str, int] = {}
+    scan = min(max_scan, len(matrix))
+    for i in range(scan):
+        mapping: dict[str, int] = {}
+        for c, val in enumerate(matrix[i]):
+            if val is None or val == "":
+                continue
+            mapping[norm_header(str(val))] = c
+        if "imei" in mapping and "date" in mapping and len(mapping) > len(best_map):
+            best_i, best_map = i, mapping
+    return best_i, best_map
+
+
+def cell_empty(val) -> bool:
+    return val is None or val == ""
+
+
+def parse_day_cell(value) -> date | None:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return _EXCEL_EPOCH + timedelta(days=int(value))
+        except Exception:
+            return None
+    return parse_day(value)
+
+
+def patch_cells(
+    token: str,
+    drive_id: str,
+    item_id: str,
+    session_id: str,
+    sheet_name: str,
+    updates: list[tuple[int, int, object, str | None]],
+) -> int:
+    """
+    updates: list of (row_1based, col_1based, value, number_format_or_None).
+    Batches contiguous same-row updates where possible.
+    """
+    if not updates:
+        return 0
+    wrote = 0
+    by_row: dict[int, list[tuple[int, object, str | None]]] = {}
+    for r, c, v, fmt in updates:
+        by_row.setdefault(r, []).append((c, v, fmt))
+    for row, cells in by_row.items():
+        cells.sort(key=lambda x: x[0])
+        run: list[tuple[int, object, str | None]] = []
+
+        def flush() -> None:
+            nonlocal wrote, run
+            if not run:
+                return
+            c0, c1 = run[0][0], run[-1][0]
+            addr = f"{get_column_letter(c0)}{row}:{get_column_letter(c1)}{row}"
+            vals = [[x[1] for x in run]]
+            fmts = [[x[2] or "General" for x in run]]
+            need_fmt = any(x[2] for x in run)
+            enc = quote(sheet_name, safe="")
+            addr_q = quote(addr, safe="")
+            url = (
+                f"{graph_excel_base(drive_id, item_id)}/worksheets('{enc}')/"
+                f"range(address='{addr_q}')"
+            )
+            body: dict = {"values": vals}
+            if need_fmt:
+                body["numberFormat"] = fmts
+            graph_excel_request(token, "PATCH", url, session_id=session_id, json=body)
+            wrote += len(run)
+            run = []
+
+        prev = None
+        for c, v, fmt in cells:
+            if prev is not None and c != prev + 1:
+                flush()
+            run.append((c, v, fmt))
+            prev = c
+        flush()
+    return wrote
+
+
+def ensure_table_covers_row(
+    token: str,
+    drive_id: str,
+    item_id: str,
+    session_id: str,
+    sheet_name: str,
+    target_row_1based: int,
+) -> None:
+    """Expand worksheet tables so they include target_row if needed."""
+    enc = quote(sheet_name, safe="")
+    url = f"{graph_excel_base(drive_id, item_id)}/worksheets('{enc}')/tables?$select=name,id"
+    try:
+        payload = graph_excel_request(token, "GET", url, session_id=session_id) or {}
+    except Exception as exc:
+        log("DEBUG", f"list tables: {exc}")
+        return
+    for tbl in payload.get("value") or []:
+        tid = tbl.get("id") or tbl.get("name")
+        if not tid:
+            continue
+        try:
+            turl = (
+                f"{graph_excel_base(drive_id, item_id)}/worksheets('{enc}')/"
+                f"tables('{quote(str(tid), safe='')}')/range?$select=address"
+            )
+            rng = graph_excel_request(token, "GET", turl, session_id=session_id) or {}
+            address = rng.get("address") or ""
+            # address like "'Sheet'!A1:L20" or "A1:L20"
+            if "!" in address:
+                address = address.split("!", 1)[1]
+            address = address.replace("$", "")
+            if ":" not in address:
+                continue
+            start, end = address.split(":", 1)
+            # parse end row digits
+            end_row = int("".join(ch for ch in end if ch.isdigit()) or "0")
+            start_col = "".join(ch for ch in start if ch.isalpha())
+            end_col = "".join(ch for ch in end if ch.isalpha())
+            start_row = int("".join(ch for ch in start if ch.isdigit()) or "1")
+            if target_row_1based <= end_row:
+                continue
+            new_addr = f"{start_col}{start_row}:{end_col}{target_row_1based}"
+            # resize via DataBodyRange is awkward; use table resize endpoint if available
+            resize_url = (
+                f"{graph_excel_base(drive_id, item_id)}/worksheets('{enc}')/"
+                f"tables('{quote(str(tid), safe='')}')/resize"
+            )
+            # Some tenants use POST resize with newRange; fall back to range PATCH on worksheet
+            try:
+                graph_excel_request(
+                    token,
+                    "POST",
+                    resize_url,
+                    session_id=session_id,
+                    json={"newRange": new_addr},
+                )
+                log("DEBUG", f"Resized table {tid} -> {new_addr}")
+            except Exception as exc:
+                log("DEBUG", f"table resize {tid}: {exc}")
+        except Exception as exc:
+            log("DEBUG", f"table cover: {exc}")
+
+
+def upsert_sheet_graph(
+    token: str,
+    drive_id: str,
+    item_id: str,
+    session_id: str,
+    sheet_names: list[str],
+    spec: dict,
+    rec: dict[str, str],
+    today: date,
+) -> str:
+    title = resolve_sheet_name(sheet_names, spec["names"])
+    if not title:
+        return f"sheet not found (tried {', '.join(spec['names'])})"
+
+    matrix, _rows, _cols = worksheet_used_range(token, drive_id, item_id, session_id, title)
+    if not matrix:
+        return f"{title}: empty sheet"
+    header_i, mapping = find_header_row_matrix(matrix)
+    date_c = col_for(mapping, "Date")
+    imei_c = col_for(mapping, "IMEI")
+    if date_c is None or imei_c is None:
+        return f"{title}: missing Date/IMEI header"
+    # mapping values are 0-based; col_for returns those indices
+
+    values = csv_to_excel_values(rec, spec["status_header"])
+    uptime_val = values.get(EXCEL_UPTIME) or ""
+    if not uptime_val or uptime_val.upper() in ("N/A", "NA"):
+        log(
+            "WARN",
+            f"{title}: CSV uptime is {uptime_val!r} for IMEI {rec.get('IMEI') or spec['imei']}",
+        )
+
+    # Find same-day row (0-based in matrix)
+    existing_i: int | None = None
+    for r in range(header_i + 1, len(matrix)):
+        if parse_day_cell(matrix[r][date_c] if date_c < len(matrix[r]) else None) == today:
+            existing_i = r
+            break
+
+    if existing_i is not None:
+        target_i = existing_i
+        only_blank = True
+        action = "fill-blank"
+    else:
+        last = header_i
+        for r in range(header_i + 1, len(matrix)):
+            cell = matrix[r][imei_c] if imei_c < len(matrix[r]) else None
+            if not cell_empty(cell):
+                last = r
+        target_i = last + 1
+        only_blank = False
+        action = "append"
+
+    target_row_1 = target_i + 1  # Graph/Excel 1-based
+    updates: list[tuple[int, int, object, str | None]] = []
+
+    for header, value in values.items():
+        c0 = col_for(mapping, header)
+        if c0 is None:
+            if "uptime" in header.lower():
+                log(
+                    "WARN",
+                    f"{title}: no Uptime column (headers={sorted(mapping.keys())})",
+                )
+            continue
+        col_1 = c0 + 1
+        if only_blank:
+            cur = None
+            if target_i < len(matrix) and c0 < len(matrix[target_i]):
+                cur = matrix[target_i][c0]
+            if not cell_empty(cur):
+                continue
+            if value is None or str(value).strip() == "":
+                continue
+        if header == "Date":
+            if only_blank:
+                continue
+            day = parse_day(value) or today
+            updates.append((target_row_1, col_1, excel_serial(day), DATE_NUMBER_FORMAT))
+            continue
+        force_text = header in ("IMEI", "Anydesk ID", "Phone")
+        cell_val: object = "" if value is None else str(value)
+        fmt = "@" if force_text else None
+        updates.append((target_row_1, col_1, cell_val, fmt))
+
+    if only_blank and not updates:
+        return f"{title}: already has {today.isoformat()} (complete)"
+
+    wrote = patch_cells(token, drive_id, item_id, session_id, title, updates)
+    if action == "append":
+        ensure_table_covers_row(token, drive_id, item_id, session_id, title, target_row_1)
+
+    if only_blank:
+        return f"{title} row {target_row_1} (filled {wrote} blank cells)"
+    return f"{title} row {target_row_1} ({action})"
+
+
+def fill_workbook_via_graph(
+    token: str,
+    drive_id: str,
+    item_id: str,
+    csv_rows: dict[str, dict[str, str]],
+    today: date,
+    sheets: list | None = None,
+) -> int:
+    """In-place Excel updates via Graph. Returns 0 on success."""
+    session_id = create_workbook_session(token, drive_id, item_id, persist=True)
+    log("INFO", "Opened Graph Excel workbook session (in-place edit)")
+    try:
+        names = list_worksheet_names(token, drive_id, item_id, session_id)
+        log("INFO", f"Workbook sheets: {', '.join(names)}")
+        ok = 0
+        changed = 0
+        for spec in sheets or SHEETS_FALLBACK:
+            rec = csv_rows.get(spec["imei"])
+            if not rec:
+                log(
+                    "WARN",
+                    f"No CSV row today for IMEI {spec['imei']} ({spec['names'][0]}) — skip sheet",
+                )
+                continue
+            # Retry once on transient lock/conflict
+            last_exc: Exception | None = None
+            for attempt in range(3):
+                try:
+                    result = upsert_sheet_graph(
+                        token, drive_id, item_id, session_id, names, spec, rec, today
+                    )
+                    last_exc = None
+                    break
+                except Exception as exc:
+                    last_exc = exc
+                    msg = str(exc).lower()
+                    if attempt < 2 and ("423" in msg or "locked" in msg or "conflict" in msg):
+                        time.sleep(2 + attempt * 2)
+                        continue
+                    raise
+            if last_exc:
+                raise last_exc
+            if result.startswith("sheet not found") or "missing" in result:
+                log("ERROR", result)
+                continue
+            if "filled" in result or "(append)" in result:
+                log("PASSED", result)
+                changed += 1
+                ok += 1
+            else:
+                log("INFO", result)
+                ok += 1
+        if ok == 0:
+            raise RuntimeError("No SharePoint sheet was updated")
+        if changed == 0:
+            log(
+                "PASSED",
+                f"SharePoint already complete for {today.isoformat()} — leave workbook unchanged",
+            )
+        else:
+            log("PASSED", "SharePoint Excel updated in-place (Graph) for station sheets")
+        return 0
+    finally:
+        close_workbook_session(token, drive_id, item_id, session_id)
+
+
+def acquire_graph_token(
+    tenant: str,
+    username: str,
+    password: str,
+    cfg_client_id: str,
+    cache_path: str,
+    site_url: str,
+    allow_interactive: bool,
+) -> str | None:
+    """Prefer a Microsoft Graph token for Excel workbook APIs."""
+    try_password = bool(password) and sys.platform != "win32"
+    graph_scope_sets = [
+        ["https://graph.microsoft.com/.default"],
+        list(GRAPH_SCOPES),
+        ["https://graph.microsoft.com/Files.ReadWrite.All"],
+    ]
+    for cid in client_ids_to_try(cfg_client_id):
+        for scopes in graph_scope_sets:
+            try:
+                token = acquire_token_silent_or_password(
+                    tenant, cid, username, password, cache_path, scopes, try_password
+                )
+                if token:
+                    log("INFO", f"Graph token OK (client {cid[:8]}…)")
+                    return token
+            except Exception as exc:
+                log("DEBUG", f"Graph silent/ROPC {cid[:8]}: {exc}")
+    if allow_interactive:
+        for cid in client_ids_to_try(cfg_client_id):
+            for scopes in (
+                ["https://graph.microsoft.com/.default"],
+                ["https://graph.microsoft.com/Files.ReadWrite.All"],
+            ):
+                try:
+                    return acquire_token_device_code(tenant, cid, cache_path, scopes)
+                except Exception as exc:
+                    log("DEBUG", f"Graph device-code {cid[:8]}: {exc}")
+    return None
+
+
 def make_sp_ctx_from_token(site_url: str, token: str):
     from office365.sharepoint.client_context import ClientContext
 
@@ -849,7 +1304,7 @@ def main() -> int:
     parser.add_argument(
         "--dry-run",
         action="store_true",
-        help="Download + fill, save locally, do not upload to SharePoint",
+        help="Download + fill locally only (no SharePoint write). Normal runs edit cells in-place via Graph.",
     )
     parser.add_argument("--interactive", action="store_true",
                         help="If password login fails, open a Microsoft browser sign-in")
@@ -912,7 +1367,29 @@ def main() -> int:
             "not Graph CLI.")
         return 1
 
+    graph_token = token if kind == "graph" else None
+    if not graph_token:
+        graph_token = acquire_graph_token(
+            tenant, username, password, cfg_client_id, cache_path, site_url, allow_interactive
+        )
+
     try:
+        # Prefer in-place Graph Excel edits (no full-file PUT / 423 locks).
+        if graph_token and file_url and not dry_run:
+            resolved = resolve_share(graph_token, file_url, api_root_for("graph", site_url))
+            if not resolved and token and kind == "spo":
+                # Resolve via SPO shares, then edit with Graph token if drive/item ids work
+                resolved = resolve_share(token, file_url, api_root_for("spo", site_url))
+            if resolved:
+                drive_id, item_id = resolved
+                try:
+                    log("INFO", "Updating workbook in-place via Microsoft Graph Excel API")
+                    return fill_workbook_via_graph(
+                        graph_token, drive_id, item_id, csv_rows, today, sheets=sheets
+                    )
+                except Exception as exc:
+                    log("WARN", f"In-place Graph fill failed ({exc}); falling back to download/upload")
+
         if token and file_url:
             api_root = api_root_for(kind, site_url)
             resolved = resolve_share(token, file_url, api_root)

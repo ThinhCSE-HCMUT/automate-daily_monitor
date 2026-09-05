@@ -125,7 +125,7 @@ TAB_INFO = {
     ),
     "progress": (
         "Watch live daily-monitor progress, read a plain-English status line, "
-        "and Start or Stop the job on this Raspberry Pi."
+        "Start or Stop the job, and review today’s PASS/FAIL summary for all stations."
     ),
     "guide": (
         "Full walkthrough of all settings tabs. Read a section here, then switch tabs to edit values."
@@ -722,6 +722,71 @@ input[type=text]:focus, input[type=password]:focus {{
 }}
 .btn-stop {{ background: #b42318; color: #fff; }}
 .btn-stop:hover:not(:disabled) {{ background: #912018; }}
+.summary-wrap {{ margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }}
+.summary-head {{
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 10px; flex-wrap: wrap; margin-bottom: 14px;
+}}
+.summary-head h3 {{ margin: 0; font-size: 1.08rem; color: var(--ink); }}
+.summary-date {{ color: var(--muted); font-size: .88rem; font-weight: 600; }}
+.summary-stats {{
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px;
+  margin-bottom: 16px;
+}}
+.stat-chip {{
+  border-radius: 14px; padding: 12px 12px 10px; border: 1px solid transparent;
+  display: flex; flex-direction: column; gap: 4px; min-height: 74px;
+}}
+.stat-chip .stat-label {{ font-size: .75rem; font-weight: 700; letter-spacing: .02em; text-transform: uppercase; opacity: .85; }}
+.stat-chip .stat-value {{ font-size: 1.55rem; font-weight: 800; line-height: 1.1; font-variant-numeric: tabular-nums; }}
+.stat-chip .stat-hint {{ font-size: .75rem; opacity: .8; }}
+.stat-filled {{ background: #e8f7ee; border-color: #9ed4b2; color: #146c2e; }}
+.stat-missing {{ background: #fff7ed; border-color: #fdba74; color: #9a3412; }}
+.stat-pass {{ background: #e8f7ee; border-color: #9ed4b2; color: #146c2e; }}
+.stat-fail {{ background: #fdecea; border-color: #f5c2c0; color: #912018; }}
+.summary-table-wrap {{
+  overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: #fbfcfe;
+}}
+.summary-table {{
+  width: 100%; border-collapse: collapse; min-width: 640px; font-size: .9rem;
+}}
+.summary-table th {{
+  text-align: left; padding: 11px 12px; color: var(--muted); font-size: .75rem;
+  text-transform: uppercase; letter-spacing: .03em; border-bottom: 1px solid var(--line);
+  background: #f3f7fc; white-space: nowrap;
+}}
+.summary-table td {{
+  padding: 12px; border-bottom: 1px solid #e8eef6; vertical-align: middle;
+}}
+.summary-table tr:last-child td {{ border-bottom: 0; }}
+.summary-table tr:hover td {{ background: #f7faff; }}
+.st-name {{ font-weight: 700; color: var(--ink); }}
+.st-imei {{ display: block; margin-top: 2px; color: var(--muted); font-size: .75rem; font-family: ui-monospace, Consolas, monospace; }}
+.st-type {{
+  display: inline-block; margin-top: 4px; font-size: .68rem; font-weight: 700;
+  padding: 2px 7px; border-radius: 999px; background: #eaf2ff; color: var(--accent-2);
+}}
+.st-type.fax {{ background: #ffedd5; color: #9a3412; }}
+.st-type.virtual {{ background: #ede9fe; color: #5b21b6; }}
+.pill {{
+  display: inline-flex; align-items: center; justify-content: center;
+  min-width: 52px; padding: 4px 9px; border-radius: 999px;
+  font-size: .72rem; font-weight: 800; letter-spacing: .02em;
+}}
+.pill-pass {{ background: #dcfce7; color: #166534; }}
+.pill-fail {{ background: #fee2e2; color: #991b1b; }}
+.pill-na {{ background: #eef2f7; color: #64748b; }}
+.row-pass {{ box-shadow: inset 3px 0 0 #22c55e; }}
+.row-fail {{ box-shadow: inset 3px 0 0 #ef4444; }}
+.row-na {{ box-shadow: inset 3px 0 0 #94a3b8; }}
+.summary-empty {{ color: var(--muted); font-size: .92rem; margin: 0; padding: 8px 2px; }}
+@media (max-width: 800px) {{
+  .summary-stats {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
+}}
+@media (max-width: 480px) {{
+  .summary-stats {{ grid-template-columns: 1fr 1fr; }}
+  .stat-chip .stat-value {{ font-size: 1.35rem; }}
+}}
 .attach-box {{
   border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
   background: #fbfcfe; display: flex; flex-direction: column; gap: 10px;
@@ -864,6 +929,52 @@ input[type=text]:focus, input[type=password]:focus {{
             <span>Stop</span>
           </button>
         </div>
+        <div class="summary-wrap" id="daily-summary">
+          <div class="summary-head">
+            <h3>Daily Monitor Summary</h3>
+            <span class="summary-date" id="sum-date">Today</span>
+          </div>
+          <div class="summary-stats">
+            <div class="stat-chip stat-filled">
+              <span class="stat-label">Has data</span>
+              <span class="stat-value" id="sum-filled">0</span>
+              <span class="stat-hint">Fields with a real value</span>
+            </div>
+            <div class="stat-chip stat-missing">
+              <span class="stat-label">Needs manual</span>
+              <span class="stat-value" id="sum-missing">0</span>
+              <span class="stat-hint">Still N/A today</span>
+            </div>
+            <div class="stat-chip stat-pass">
+              <span class="stat-label">PASS</span>
+              <span class="stat-value" id="sum-pass">0</span>
+              <span class="stat-hint">SSH / Wi‑Fi / Fax checks</span>
+            </div>
+            <div class="stat-chip stat-fail">
+              <span class="stat-label">FAIL</span>
+              <span class="stat-value" id="sum-fail">0</span>
+              <span class="stat-hint">Checks that failed</span>
+            </div>
+          </div>
+          <div class="summary-table-wrap">
+            <table class="summary-table" aria-label="Today station summary">
+              <thead>
+                <tr>
+                  <th>Station</th>
+                  <th>SSH</th>
+                  <th>Wi‑Fi / SIM</th>
+                  <th>Voice / Fax</th>
+                  <th>Firmware</th>
+                  <th>Uptime</th>
+                  <th>Overall</th>
+                </tr>
+              </thead>
+              <tbody id="sum-tbody">
+                <tr><td colspan="7"><p class="summary-empty">No station summary yet — run the daily monitor.</p></td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </section>
 
@@ -920,6 +1031,7 @@ input[type=text]:focus, input[type=password]:focus {{
           <li>The status line under the bar is a plain-English summary of the latest log.</li>
           <li><strong>Start</strong> launches <code>./monitor</code> on the Pi (disabled while a run is active).</li>
           <li><strong>Stop</strong> sends a terminate signal to the running job (disabled when idle).</li>
+          <li><strong>Daily Monitor Summary</strong> shows today’s filled vs N/A fields, PASS/FAIL counts, and a color-coded table for all stations.</li>
         </ul>
       </div>
     </section>
@@ -973,6 +1085,56 @@ function showTab(id) {{
   }}
   try {{ history.replaceState(null, '', '#' + id); }} catch (e) {{}}
 }}
+function pill(kind) {{
+  const k = (kind || 'na').toLowerCase();
+  const label = k === 'pass' ? 'PASS' : (k === 'fail' ? 'FAIL' : 'N/A');
+  const cls = k === 'pass' ? 'pill-pass' : (k === 'fail' ? 'pill-fail' : 'pill-na');
+  return `<span class="pill ${{cls}}">${{label}}</span>`;
+}}
+function escHtml(s) {{
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}}
+function applySummary(sum) {{
+  if (!sum) return;
+  const dateEl = document.getElementById('sum-date');
+  const filled = document.getElementById('sum-filled');
+  const missing = document.getElementById('sum-missing');
+  const passEl = document.getElementById('sum-pass');
+  const failEl = document.getElementById('sum-fail');
+  const tbody = document.getElementById('sum-tbody');
+  if (dateEl) dateEl.textContent = sum.date ? ('Date ' + sum.date) : 'Today';
+  if (filled) filled.textContent = String(sum.filled ?? 0);
+  if (missing) missing.textContent = String(sum.missing ?? 0);
+  if (passEl) passEl.textContent = String(sum.pass ?? 0);
+  if (failEl) failEl.textContent = String(sum.fail ?? 0);
+  if (!tbody) return;
+  const stations = sum.stations || [];
+  if (!stations.length) {{
+    tbody.innerHTML = '<tr><td colspan="7"><p class="summary-empty">No stations configured.</p></td></tr>';
+    return;
+  }}
+  tbody.innerHTML = stations.map(st => {{
+    const overall = st.overall || 'na';
+    const typeCls = st.type === 'fax' ? 'fax' : (st.type === 'virtual' ? 'virtual' : '');
+    const typeLabel = st.type === 'fax' ? 'Fax' : (st.type === 'virtual' ? 'Virtual' : 'Voicelink');
+    const rowCls = overall === 'pass' ? 'row-pass' : (overall === 'fail' ? 'row-fail' : 'row-na');
+    const fw = (st.firmware && st.firmware !== 'N/A') ? st.firmware : '—';
+    const up = (st.uptime && st.uptime !== 'N/A') ? st.uptime : '—';
+    return `<tr class="${{rowCls}}">
+      <td>
+        <span class="st-name">${{escHtml(st.name || 'Station')}}</span>
+        <span class="st-imei">${{escHtml(st.imei || '')}}</span>
+        <span class="st-type ${{typeCls}}">${{typeLabel}}</span>
+      </td>
+      <td>${{pill(st.ssh)}}</td>
+      <td>${{pill(st.wifi)}}</td>
+      <td>${{pill(st.vfax)}}</td>
+      <td>${{escHtml(fw)}}</td>
+      <td>${{escHtml(up)}}</td>
+      <td>${{pill(overall)}}</td>
+    </tr>`;
+  }}).join('');
+}}
 function applyProgress(data) {{
   const flow = data.flow || 'IDLE';
   const pct = Math.max(0, Math.min(100, Number(data.percent) || 0));
@@ -991,6 +1153,7 @@ function applyProgress(data) {{
   if (raw) raw.textContent = data.raw || '';
   if (startBtn) startBtn.disabled = running;
   if (stopBtn) stopBtn.disabled = !running;
+  applySummary(data.summary);
 }}
 async function refreshProgress() {{
   try {{

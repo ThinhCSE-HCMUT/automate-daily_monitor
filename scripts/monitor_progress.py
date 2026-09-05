@@ -172,6 +172,173 @@ def paraphrase(flow: str, raw: str) -> str:
     return base
 
 
+def resolve_csv_file(root: str, monitor_conf: str) -> str:
+    csv_path = "output/daily_monitor.csv"
+    conf = os.path.join(root, monitor_conf) if not os.path.isabs(monitor_conf) else monitor_conf
+    if os.path.isfile(conf):
+        with open(conf, encoding="utf-8") as f:
+            for raw in f:
+                line = raw.strip()
+                if line.startswith("output_csv="):
+                    csv_path = line.split("=", 1)[1].strip() or csv_path
+                    break
+    if not os.path.isabs(csv_path):
+        csv_path = os.path.join(root, csv_path)
+    return csv_path
+
+
+INFO_FIELDS = (
+    "Anydesk ID",
+    "Firmware Version",
+    "Uptime (hh:mm)",
+    "Carrier",
+    "Phone",
+    "RSSI (dBm)",
+)
+STATUS_FIELDS = (
+    "SSH Access",
+    "WiFi Status (Sim Data)",
+    "Voicelink/Fax status",
+)
+
+
+def _is_na(val: str) -> bool:
+    s = (val or "").strip()
+    return (not s) or s.upper() in ("N/A", "NA", "-")
+
+
+def _status_kind(val: str) -> str:
+    s = (val or "").strip().upper()
+    if s == "PASS":
+        return "pass"
+    if s == "FAIL":
+        return "fail"
+    return "na"
+
+
+def _station_type(name: str) -> str:
+    low = (name or "").lower()
+    if "fax" in low:
+        return "fax"
+    if "virtual" in low:
+        return "virtual"
+    return "voicelink"
+
+
+def daily_summary(monitor_conf: str) -> dict[str, Any]:
+    """Build today's CSV summary for the Monitor Progress UI."""
+    import csv
+    from datetime import datetime
+
+    from stations_lib import load_stations
+
+    root = project_root(monitor_conf)
+    today = datetime.now().strftime("%Y-%m-%d")
+    stations = load_stations(
+        monitor_conf if os.path.isabs(monitor_conf) else os.path.join(root, monitor_conf)
+    )
+    csv_path = resolve_csv_file(root, monitor_conf)
+    by_imei: dict[str, dict[str, str]] = {}
+    if os.path.isfile(csv_path):
+        with open(csv_path, newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            for raw in reader:
+                rec = { (k or "").strip(): (v or "").strip() for k, v in raw.items() if k }
+                day = (rec.get("Date") or "")[:10]
+                imei = rec.get("IMEI") or ""
+                if day == today and imei:
+                    by_imei[imei] = rec
+
+    filled = 0
+    missing = 0
+    pass_n = 0
+    fail_n = 0
+    rows_out: list[dict[str, Any]] = []
+
+    for st in stations:
+        imei = st.get("imei") or ""
+        name = st.get("name") or imei or "Station"
+        stype = _station_type(name)
+        rec = by_imei.get(imei)
+        if not rec:
+            # No today's row — all info missing; SSH/WiFi treated as fail/absent
+            for _ in INFO_FIELDS:
+                missing += 1
+            cells = {
+                "ssh": "na",
+                "wifi": "na",
+                "vfax": "na",
+                "firmware": "N/A",
+                "uptime": "N/A",
+                "overall": "fail",
+            }
+            rows_out.append(
+                {
+                    "name": name,
+                    "imei": imei,
+                    "type": stype,
+                    "present": False,
+                    **cells,
+                }
+            )
+            continue
+
+        for field in INFO_FIELDS:
+            if _is_na(rec.get(field) or ""):
+                missing += 1
+            else:
+                filled += 1
+
+        ssh = _status_kind(rec.get("SSH Access") or "")
+        wifi = _status_kind(rec.get("WiFi Status (Sim Data)") or "")
+        vfax_raw = rec.get("Voicelink/Fax status") or ""
+        # Voicelink/Virtual intentionally N/A for voice/fax column — don't score as fail
+        if stype in ("voicelink", "virtual") and _is_na(vfax_raw):
+            vfax = "na"
+        else:
+            vfax = _status_kind(vfax_raw)
+            if vfax == "pass":
+                pass_n += 1
+            elif vfax == "fail":
+                fail_n += 1
+
+        for kind in (ssh, wifi):
+            if kind == "pass":
+                pass_n += 1
+            elif kind == "fail":
+                fail_n += 1
+
+        overall = "pass" if ssh == "pass" else ("fail" if ssh == "fail" else "na")
+        if wifi == "fail":
+            overall = "fail"
+        rows_out.append(
+            {
+                "name": name,
+                "imei": imei,
+                "type": stype,
+                "present": True,
+                "ssh": ssh,
+                "wifi": wifi,
+                "vfax": vfax,
+                "firmware": rec.get("Firmware Version") or "N/A",
+                "uptime": rec.get("Uptime (hh:mm)") or "N/A",
+                "overall": overall,
+            }
+        )
+
+    return {
+        "date": today,
+        "csv": csv_path,
+        "filled": filled,
+        "missing": missing,
+        "pass": pass_n,
+        "fail": fail_n,
+        "stations": rows_out,
+        "station_count": len(rows_out),
+        "present_count": sum(1 for r in rows_out if r.get("present")),
+    }
+
+
 def progress_snapshot(monitor_conf: str) -> dict[str, Any]:
     root = project_root(monitor_conf)
     running = is_running(root)
@@ -203,6 +370,7 @@ def progress_snapshot(monitor_conf: str) -> dict[str, Any]:
         "message": friendly,
         "raw": raw,
         "updated": st.get("updated") or "",
+        "summary": daily_summary(monitor_conf),
     }
 
 

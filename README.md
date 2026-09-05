@@ -2,9 +2,7 @@
 
 **Raspberry Pi–based daily health automation for multi-site cellular router stations** (C11 + Python).
 
-A solo project by a **QA Firmware** engineer at **Simplifi Company Limited** — automates what used to be a manual morning checklist across **Vietnam lab stations** (Voicelink + Fax) and **US Virtual stations**, then writes results to CSV and SharePoint Excel.
-
-> **Security note:** Never commit real passwords, TOTP secrets, or API keys. Use `*.conf.example` templates and keep live `*.conf` / `token_cache.bin` gitignored.
+A project as a **QA Firmware** engineer at **Simplifi Company Limited** — automates what used to be a manual morning checklist across **Vietnam lab stations** (Voicelink + Fax) and **US Virtual stations**, then writes results to CSV and SharePoint Excel.
 
 ---
 
@@ -40,6 +38,8 @@ flowchart TB
   M --> SP["SharePoint Excel"]
 ```
 
+
+
 Full stage list → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 
 ---
@@ -47,8 +47,6 @@ Full stage list → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 ## Config web UI
 
 Local settings + Monitor Progress UI on the Pi (`http://<pi-ip>:8765`, mornings 08:00–11:00).
-
-<!-- Drop real screenshots into docs/assets/ (same filenames). Crop/blur any secrets. -->
 
 ![Monitor Progress — live status, Daily Summary, station table](docs/assets/ui-monitor-progress.png)
 

@@ -1133,12 +1133,12 @@ int main(int argc, char **argv)
     restore_lab_wifi();
     sleep(5);
 
+    /* US jump is independent of VN WiFi/SSH — always attempt when jump_host is set. */
     if (vn_seen && !vn_ssh_ok) {
         log_msg("WARN",
-                "Skip US Virtual Station collect — Voicelink/Fax SSH did not all PASS");
-    } else {
-        collect_us_via_jump(conf_path);
+                "Some Voicelink/Fax SSH did not PASS — still attempting US Virtual Stations");
     }
+    collect_us_via_jump(conf_path);
 
     fetch_portal_logs(conf_path);
     analyze_router_logs(conf_path);

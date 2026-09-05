@@ -579,7 +579,7 @@ body {{
   padding: 22px 24px; box-shadow: var(--shadow);
 }}
 .hero h1 {{ margin: 0; font-size: clamp(1.25rem, 3vw, 1.7rem); }}
-.tabs {{ display: flex; gap: 8px; flex-wrap: wrap; margin: 18px 0 14px; }}
+.tabs {{ display: flex; gap: 8px; flex-wrap: wrap; margin: 18px 0 14px; justify-content: center; }}
 .tab {{
   border: 1px solid var(--line); background: rgba(255,255,255,.72); color: var(--ink);
   border-radius: 999px; padding: 10px 16px; font-weight: 600; cursor: pointer;

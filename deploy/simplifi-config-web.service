@@ -1,0 +1,20 @@
+[Unit]
+Description=Simplifi config web UI (08:00–11:00 window)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/Workspace/Daily_Monitor/automate-daily_monitor
+ExecStart=/home/pi/Workspace/Daily_Monitor/automate-daily_monitor/.venv/bin/python3 scripts/config_web.py --bind 0.0.0.0 --port 8765
+# Auto-stop ~3 hours after start (08:00 → ~11:00)
+RuntimeMaxSec=3h
+Restart=no
+Nice=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

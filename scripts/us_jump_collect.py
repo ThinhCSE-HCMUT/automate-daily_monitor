@@ -274,7 +274,17 @@ def main() -> int:
     args = parser.parse_args()
     job_dir = os.path.dirname(os.path.abspath(args.job)) or "."
     log_path = os.path.join(job_dir, "collect.log")
-    _log_fp = open(log_path, "a", encoding="utf-8")
+    try:
+        # Exclusive to this process — starter.cmd must not also redirect here.
+        _log_fp = open(log_path, "a", encoding="utf-8")
+    except PermissionError:
+        alt = os.path.join(job_dir, f"collect_{os.getpid()}.log")
+        try:
+            _log_fp = open(alt, "a", encoding="utf-8")
+            print(f"[WARN] collect.log locked — logging to {alt}", flush=True)
+        except OSError:
+            _log_fp = None
+            print("[WARN] Cannot open collect.log — console only", flush=True)
     with open(args.job, encoding="utf-8") as f:
         job = json.load(f)
     out_path = args.out or job.get("out") or os.path.join(os.path.dirname(args.job), "results.json")
@@ -290,6 +300,11 @@ def main() -> int:
     with open(out_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2)
     log("INFO", f"Wrote {out_path} n={len(rows)}")
+    if _log_fp:
+        try:
+            _log_fp.close()
+        except OSError:
+            pass
     return 0
 
 

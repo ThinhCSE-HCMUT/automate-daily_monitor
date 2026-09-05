@@ -108,12 +108,15 @@ def write_win_starters(win_dir: str, tmpdir: str) -> tuple[str, str]:
     """Scripts that start the collector outside the OpenSSH job object."""
     cmd_path = os.path.join(tmpdir, "start_collect.cmd")
     ps_path = os.path.join(tmpdir, "start_jump.ps1")
+    # Do NOT redirect stdout to collect.log — us_jump_collect.py already appends
+    # that file. On Windows, cmd's >> lock + Python open() = PermissionError.
     with open(cmd_path, "w", encoding="ascii", newline="\r\n") as f:
         f.write(
             "@echo off\r\n"
             f"cd /d {win_dir}\r\n"
-            "echo ===== start %DATE% %TIME% =====>> collect.log\r\n"
-            "py -3 us_jump_collect.py --job job.json >> collect.log 2>&1\r\n"
+            "echo ===== start %DATE% %TIME% =====>> runner.log\r\n"
+            "py -3 us_jump_collect.py --job job.json >> runner.log 2>&1\r\n"
+            "echo ===== done %DATE% %TIME% rc=%ERRORLEVEL% =====>> runner.log\r\n"
         )
     with open(ps_path, "w", encoding="utf-8", newline="\r\n") as f:
         f.write(
@@ -129,18 +132,33 @@ def write_win_starters(win_dir: str, tmpdir: str) -> tuple[str, str]:
     return cmd_path, ps_path
 
 
-def remote_tail_log(user: str, host: str, win_dir: str) -> str:
+def remote_tail_log(user: str, host: str, win_dir: str, name: str = "collect.log") -> str:
     r = run(
         ssh_base(user, host)
         + [
             "powershell",
             "-NoProfile",
             "-Command",
-            f"if (Test-Path '{win_dir}\\collect.log') {{ Get-Content -Tail 8 '{win_dir}\\collect.log' }} else {{ 'NO_LOG' }}",
+            f"if (Test-Path '{win_dir}\\{name}') {{ Get-Content -Tail 12 '{win_dir}\\{name}' }} else {{ 'NO_LOG' }}",
         ],
         timeout=25,
     )
     return ((r.stdout or "") + (r.stderr or "")).strip()
+
+
+def log_looks_fatal(tail: str) -> str | None:
+    """Return a short reason if collector already crashed."""
+    if not tail or tail == "NO_LOG":
+        return None
+    low = tail.lower()
+    if "permissionerror" in low:
+        return "collector PermissionError (log file locked) — pull latest scripts and retry"
+    if "[error]" in low and "wrote" not in low:
+        # last lines contain ERROR and no successful Wrote
+        for line in reversed(tail.splitlines()):
+            if "[ERROR]" in line or "[error]" in line.lower():
+                return line.strip()[:240]
+    return None
 
 
 def csv_day(stamp: str) -> str:
@@ -270,7 +288,13 @@ def main() -> int:
             log("ERROR", f"scp starter failed: {(r.stderr or '')[:300]}")
             return 1
     run(
-        ssh_base(user, host) + ["cmd", "/c", f"del /f /q {win_dir}\\results.json"],
+        ssh_base(user, host)
+        + [
+            "cmd",
+            "/c",
+            f"del /f /q {win_dir}\\results.json "
+            f"{win_dir}\\collect.log {win_dir}\\runner.log 2>nul",
+        ],
         timeout=20,
     )
     # OpenSSH on Windows kills children when the session ends. Win32_Process.Create
@@ -313,9 +337,15 @@ def main() -> int:
                     break
                 ticks += 1
                 if ticks % 3 == 1:
-                    tail = remote_tail_log(user, host, win_dir)
+                    tail = remote_tail_log(user, host, win_dir, "collect.log")
+                    if not tail or tail == "NO_LOG":
+                        tail = remote_tail_log(user, host, win_dir, "runner.log")
                     if tail and tail != "NO_LOG":
                         log("INFO", f"collect.log: {tail.replace(chr(10), ' | ')}")
+                        fatal = log_looks_fatal(tail)
+                        if fatal:
+                            log("ERROR", f"US collector aborted early: {fatal}")
+                            return 1
                     else:
                         log("INFO", "Laptop is back; collector log not written yet ...")
                 else:
@@ -323,7 +353,9 @@ def main() -> int:
         time.sleep(8)
 
     if not back:
-        tail = remote_tail_log(user, host, win_dir)
+        tail = remote_tail_log(user, host, win_dir, "collect.log")
+        if not tail or tail == "NO_LOG":
+            tail = remote_tail_log(user, host, win_dir, "runner.log")
         log("ERROR", "US laptop did not return results.json in time")
         if tail:
             log("ERROR", f"collect.log: {tail.replace(chr(10), ' | ')}")

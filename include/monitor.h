@@ -87,9 +87,13 @@ typedef struct {
 
 extern FILE *g_log;
 extern Config g_cfg;
+extern char g_flow[48];
 
 /* util */
 void log_msg(const char *level, const char *fmt, ...);
+void set_monitor_flow(const char *flow);
+void set_monitor_flow_pct(const char *flow, int percent);
+void write_monitor_status(int running, int percent, const char *message);
 int  run_cmd(const char *cmd, char *out, size_t out_sz, int timeout_sec);
 int  file_exists(const char *path);
 int  ensure_parent_dir(const char *path);

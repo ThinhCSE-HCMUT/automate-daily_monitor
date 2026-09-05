@@ -35,6 +35,7 @@ from stations_lib import (
     write_conf_updates,
     write_portal_imeis_csv,
 )
+import monitor_progress as monprog
 
 STATE: dict = {}
 
@@ -76,9 +77,13 @@ TAB_ICONS = {
     "sharepoint": _ICON(
         "M14 2H7a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8l-5-6zm0 2.5L17.5 8H14V4.5zM8 12h8v2H8v-2zm0 4h8v2H8v-2zM8 8h3v2H8V8z"
     ),
-    # lab wifi / jump
+    # lab wifi / jump (VN / US Network)
     "lab": _ICON(
         "M12 18a2 2 0 1 0 0 4 2 2 0 0 0 0-4zm0-5a6.5 6.5 0 0 1 4.6 1.9l-1.4 1.4A4.5 4.5 0 0 0 12 15a4.5 4.5 0 0 0-3.2 1.3L7.4 14.9A6.5 6.5 0 0 1 12 13zm0-5a11 11 0 0 1 7.8 3.2l-1.4 1.4A9 9 0 0 0 12 10a9 9 0 0 0-6.4 2.6L4.2 11.2A11 11 0 0 1 12 8z"
+    ),
+    # monitor progress / play
+    "progress": _ICON(
+        "M8 5v14l11-7L8 5zm4-3a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 2a8 8 0 1 1 0 16 8 8 0 0 1 0-16z"
     ),
     # user guide / info
     "guide": _ICON(
@@ -115,15 +120,20 @@ TAB_INFO = {
         "clears the local Microsoft login cache so the next run signs in with the new account."
     ),
     "lab": (
-        "Lab Wi‑Fi the Pi rejoins between station hops, plus the US Tailscale jump host "
+        "Lab Wi‑Fi the Pi rejoins between Vietnam station hops, plus the US Tailscale jump host "
         "used to reach Virtual Stations abroad."
+    ),
+    "progress": (
+        "Watch live daily-monitor progress, read a plain-English status line, "
+        "and Start or Stop the job on this Raspberry Pi."
     ),
     "guide": (
         "Full walkthrough of all settings tabs. Read a section here, then switch tabs to edit values."
     ),
 }
 
-VALID_TABS = ("stations", "portal", "fax", "sharepoint", "lab", "guide")
+VALID_TABS = ("stations", "portal", "fax", "sharepoint", "lab", "progress", "guide")
+NO_SAVE_TABS = frozenset({"guide", "progress"})
 
 FIELD_LABELS = {
     "name": "Name",
@@ -679,6 +689,39 @@ input[type=text]:focus, input[type=password]:focus {{
 .guide-card p, .guide-card li {{ color: var(--muted); font-size: .94rem; line-height: 1.5; }}
 .guide-card ul {{ margin: 6px 0 0; padding-left: 1.2rem; }}
 .guide-card li {{ margin: 4px 0; }}
+.progress-card {{ padding: 20px 18px; }}
+.progress-flow {{
+  display: flex; justify-content: space-between; align-items: baseline;
+  margin: 0 0 10px; gap: 12px; flex-wrap: wrap;
+}}
+.progress-flow-name {{ font-weight: 800; color: var(--accent-2); font-size: 1.05rem; }}
+.progress-pct {{ font-weight: 800; color: var(--ink); font-variant-numeric: tabular-nums; }}
+.progress-track {{
+  height: 16px; border-radius: 999px; background: #e4eef9; overflow: hidden;
+  border: 1px solid #c5daf5;
+}}
+.progress-fill {{
+  height: 100%; width: 0%; border-radius: 999px;
+  background: linear-gradient(90deg, #1a6fd4, #3d93e8);
+  transition: width .35s ease;
+}}
+.progress-msg {{
+  margin: 14px 0 0; padding: 12px 14px; border-radius: 12px;
+  background: #f3f8ff; border: 1px solid #d5deea;
+  color: var(--ink); font-size: .98rem; line-height: 1.45; min-height: 3.2em;
+}}
+.progress-raw {{
+  margin: 8px 0 0; color: var(--muted); font-size: .78rem;
+  font-family: ui-monospace, Consolas, monospace; word-break: break-all;
+}}
+.monitor-actions {{
+  display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px;
+}}
+.btn:disabled, .btn[disabled] {{
+  opacity: .45; cursor: not-allowed; transform: none !important; box-shadow: none !important;
+}}
+.btn-stop {{ background: #b42318; color: #fff; }}
+.btn-stop:hover:not(:disabled) {{ background: #912018; }}
 .attach-box {{
   border: 1px solid var(--line); border-radius: 12px; padding: 12px 14px;
   background: #fbfcfe; display: flex; flex-direction: column; gap: 10px;
@@ -751,7 +794,8 @@ input[type=text]:focus, input[type=password]:focus {{
       {tab_btn("portal", "Portal")}
       {tab_btn("fax", "Fax")}
       {tab_btn("sharepoint", "SharePoint")}
-      {tab_btn("lab", "Lab / Jump")}
+      {tab_btn("lab", "VN / US Network")}
+      {tab_btn("progress", "Monitor Progress")}
       {tab_btn("guide", "User Guide")}
     </nav>
 
@@ -795,6 +839,34 @@ input[type=text]:focus, input[type=password]:focus {{
       <div class="card"><div class="grid">{fields_block("monitor", MONITOR_KEYS, mon_cfg)}</div></div>
     </section>
 
+    <section class="panel{' active' if tab == 'progress' else ''}" id="tab-progress">
+      <div class="card progress-card">
+        <div class="progress-flow">
+          <span class="progress-flow-name" id="prog-flow">IDLE</span>
+          <span class="progress-pct" id="prog-pct">0%</span>
+        </div>
+        <div class="progress-track" aria-hidden="true">
+          <div class="progress-fill" id="prog-fill"></div>
+        </div>
+        <p class="progress-msg" id="prog-msg">Monitor is idle. Press Start to run the daily job.</p>
+        <p class="progress-raw" id="prog-raw"></p>
+        <div class="monitor-actions">
+          <button type="button" class="btn btn-primary" id="btn-mon-start" onclick="monitorStart()">
+            <span class="btn-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+            </span>
+            <span>Start</span>
+          </button>
+          <button type="button" class="btn btn-stop" id="btn-mon-stop" onclick="monitorStop()" disabled>
+            <span class="btn-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>
+            </span>
+            <span>Stop</span>
+          </button>
+        </div>
+      </div>
+    </section>
+
     <section class="panel{' active' if tab == 'guide' else ''}" id="tab-guide">
       <div class="card guide-card">
         <h2>How to use this settings page</h2>
@@ -805,7 +877,7 @@ input[type=text]:focus, input[type=password]:focus {{
         <ul>
           <li><strong>Voicelink Station</strong> — local Wi‑Fi hop + SSH to the router; status goes to a SharePoint sheet.</li>
           <li><strong>Fax Station</strong> — same as Voicelink, plus a Fax queue user used by the Fax tab.</li>
-          <li><strong>Virtual Station</strong> — reached via the US Tailscale jump host (Lab / Jump tab); access is usually <code>tailscale</code>.</li>
+          <li><strong>Virtual Station</strong> — reached via the US Tailscale jump host (VN / US Network tab); access is usually <code>tailscale</code>.</li>
           <li>Use <strong>＋ Add station</strong> to create a card, fill Name / IMEI / Wi‑Fi / SharePoint sheet, then Save all.</li>
           <li>Mark delete with ✕, then Save all to remove. Status column defaults are applied automatically.</li>
         </ul>
@@ -833,17 +905,26 @@ input[type=text]:focus, input[type=password]:focus {{
           <li>If you change the SharePoint username or password and Save all, the Pi deletes <code>token_cache.bin</code> automatically so the next run logs in with the new account.</li>
         </ul>
 
-        <h3><span class="tab-icon">{TAB_ICONS["lab"]}</span> Lab / Jump</h3>
+        <h3><span class="tab-icon">{TAB_ICONS["lab"]}</span> VN / US Network</h3>
         <p>Network settings for the Raspberry Pi and the US laptop used for Virtual Stations.</p>
         <ul>
-          <li><strong>Lab Wi‑Fi</strong> — SSIDs/password the Pi reconnects to between station Wi‑Fi hops.</li>
+          <li><strong>Lab Wi‑Fi</strong> — SSIDs/password the Pi reconnects to between Vietnam station Wi‑Fi hops.</li>
           <li><strong>Jump host</strong> — Tailscale IP and SSH user of the US machine that hops to Virtual Station routers.</li>
           <li>Optional Cursor API key is only used if log analysis is enabled in <code>monitor.conf</code>.</li>
+        </ul>
+
+        <h3><span class="tab-icon">{TAB_ICONS["progress"]}</span> Monitor Progress</h3>
+        <p>Live view of the daily job on this Pi.</p>
+        <ul>
+          <li>Progress bar and flow name show which stage is running (VN SSH, US SSH, Fax, Portal, SharePoint, …).</li>
+          <li>The status line under the bar is a plain-English summary of the latest log.</li>
+          <li><strong>Start</strong> launches <code>./monitor</code> on the Pi (disabled while a run is active).</li>
+          <li><strong>Stop</strong> sends a terminate signal to the running job (disabled when idle).</li>
         </ul>
       </div>
     </section>
 
-    <div class="actions{' is-hidden' if tab == 'guide' else ''}" id="cfg-actions">
+    <div class="actions{' is-hidden' if tab in NO_SAVE_TABS else ''}" id="cfg-actions">
       <button type="submit" class="btn btn-primary">
         <span class="btn-icon" aria-hidden="true">{ICON_SAVE}</span>
         <span>Save all</span>
@@ -871,6 +952,8 @@ input[type=text]:focus, input[type=password]:focus {{
 
 <script>
 const TAB_INFO = {tab_info_json};
+const NO_SAVE_TABS = new Set(['guide', 'progress']);
+let progressTimer = null;
 function showTab(id) {{
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -882,8 +965,64 @@ function showTab(id) {{
   const info = document.getElementById('tab-info-text');
   if (info) info.textContent = TAB_INFO[id] || '';
   const actions = document.getElementById('cfg-actions');
-  if (actions) actions.classList.toggle('is-hidden', id === 'guide');
+  if (actions) actions.classList.toggle('is-hidden', NO_SAVE_TABS.has(id));
+  if (progressTimer) {{ clearInterval(progressTimer); progressTimer = null; }}
+  if (id === 'progress') {{
+    refreshProgress();
+    progressTimer = setInterval(refreshProgress, 2000);
+  }}
   try {{ history.replaceState(null, '', '#' + id); }} catch (e) {{}}
+}}
+function applyProgress(data) {{
+  const flow = data.flow || 'IDLE';
+  const pct = Math.max(0, Math.min(100, Number(data.percent) || 0));
+  const running = !!data.running;
+  const flowEl = document.getElementById('prog-flow');
+  const pctEl = document.getElementById('prog-pct');
+  const fill = document.getElementById('prog-fill');
+  const msg = document.getElementById('prog-msg');
+  const raw = document.getElementById('prog-raw');
+  const startBtn = document.getElementById('btn-mon-start');
+  const stopBtn = document.getElementById('btn-mon-stop');
+  if (flowEl) flowEl.textContent = flow;
+  if (pctEl) pctEl.textContent = pct + '%';
+  if (fill) fill.style.width = pct + '%';
+  if (msg) msg.textContent = data.message || '';
+  if (raw) raw.textContent = data.raw || '';
+  if (startBtn) startBtn.disabled = running;
+  if (stopBtn) stopBtn.disabled = !running;
+}}
+async function refreshProgress() {{
+  try {{
+    const r = await fetch('/api/progress', {{ cache: 'no-store' }});
+    if (!r.ok) return;
+    applyProgress(await r.json());
+  }} catch (e) {{}}
+}}
+async function monitorStart() {{
+  const startBtn = document.getElementById('btn-mon-start');
+  if (startBtn) startBtn.disabled = true;
+  try {{
+    const r = await fetch('/api/monitor/start', {{ method: 'POST' }});
+    const data = await r.json();
+    if (data.message) alert(data.message);
+  }} catch (e) {{
+    alert('Could not start monitor: ' + e);
+  }}
+  refreshProgress();
+}}
+async function monitorStop() {{
+  if (!confirm('Stop the daily monitor now?')) return;
+  const stopBtn = document.getElementById('btn-mon-stop');
+  if (stopBtn) stopBtn.disabled = true;
+  try {{
+    const r = await fetch('/api/monitor/stop', {{ method: 'POST' }});
+    const data = await r.json();
+    if (data.message) alert(data.message);
+  }} catch (e) {{
+    alert('Could not stop monitor: ' + e);
+  }}
+  refreshProgress();
 }}
 function togglePw(btn) {{
   const wrap = btn.closest('.pw-wrap');
@@ -1138,7 +1277,7 @@ function validateBeforeSave(ev) {{
 }}
 (function () {{
   const fromHash = (location.hash || '').replace('#', '');
-  const start = ['stations','portal','fax','sharepoint','lab','guide'].includes(fromHash)
+  const start = ['stations','portal','fax','sharepoint','lab','progress','guide'].includes(fromHash)
     ? fromHash
     : document.getElementById('active_tab').value || 'stations';
   showTab(start);
@@ -1413,7 +1552,20 @@ class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt: str, *args) -> None:
         sys.stderr.write("[%s] %s\n" % (self.log_date_time_string(), fmt % args))
 
+    def _send_json(self, code: int, payload: dict) -> None:
+        data = json.dumps(payload).encode("utf-8")
+        self.send_response(code)
+        self.send_header("Content-Type", "application/json; charset=utf-8")
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def do_GET(self) -> None:
+        path = (self.path or "/").split("?", 1)[0]
+        if path == "/api/progress":
+            self._send_json(200, monprog.progress_snapshot(STATE["monitor_conf"]))
+            return
         data = page()
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
@@ -1422,6 +1574,15 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_POST(self) -> None:
+        path = (self.path or "/").split("?", 1)[0]
+        if path == "/api/monitor/start":
+            ok, msg = monprog.start_monitor(STATE["monitor_conf"])
+            self._send_json(200 if ok else 409, {"ok": ok, "message": msg, **monprog.progress_snapshot(STATE["monitor_conf"])})
+            return
+        if path == "/api/monitor/stop":
+            ok, msg = monprog.stop_monitor(STATE["monitor_conf"])
+            self._send_json(200 if ok else 409, {"ok": ok, "message": msg, **monprog.progress_snapshot(STATE["monitor_conf"])})
+            return
         ctype = (self.headers.get("Content-Type") or "").lower()
         if "multipart/form-data" in ctype:
             form = parse_multipart(self)

@@ -50,7 +50,9 @@ SIM_ERROR, AUTH_FAILURE, LOW_SIGNAL). Empty list when status is Normal.
 
 def log(level: str, msg: str) -> None:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    print(f"[{now}] [{level}] {msg}", flush=True)
+    flow = (os.environ.get("MONITOR_FLOW") or "").strip()
+    tag = f" [{flow}]" if flow else ""
+    print(f"[{now}] [{level}]{tag} {msg}", flush=True)
 
 
 def load_conf(path: str) -> dict[str, str]:

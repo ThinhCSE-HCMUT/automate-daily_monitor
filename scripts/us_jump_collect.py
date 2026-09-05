@@ -25,7 +25,9 @@ _log_fp = None
 
 def log(level: str, msg: str) -> None:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{now}] [{level}] {msg}"
+    flow = (os.environ.get("MONITOR_FLOW") or "").strip()
+    tag = f" [{flow}]" if flow else ""
+    line = f"[{now}] [{level}]{tag} {msg}"
     print(line, flush=True)
     if _log_fp:
         _log_fp.write(line + "\n")

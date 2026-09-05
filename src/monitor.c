@@ -735,6 +735,7 @@ static void fetch_portal_logs(const char *conf_path)
     char cmd[1024];
     const char *py;
 
+    set_monitor_flow_pct("PORTAL GET LOG", 60);
     if (!g_cfg.portal_logs) {
         log_msg("INFO", "Portal log download disabled (portal_logs=0)");
         return;
@@ -765,6 +766,7 @@ static void analyze_router_logs(const char *conf_path)
     char cmd[1024];
     const char *py;
 
+    set_monitor_flow_pct("LOG ANALYSIS", 72);
     if (!g_cfg.log_analysis) {
         log_msg("INFO", "Router log AI analysis disabled (log_analysis=0)");
         return;
@@ -794,6 +796,7 @@ static void send_fax_stations(void)
     char cmd[1024];
     const char *py;
 
+    set_monitor_flow_pct("FAX PRINT", 78);
     if (!g_cfg.fax_send) {
         log_msg("INFO", "Fax send disabled (fax_send=0)");
         return;
@@ -933,6 +936,7 @@ static void sync_to_laptop(void)
     char day[16], day_dir[MAX_PATH];
     int rc;
 
+    set_monitor_flow_pct("LAPTOP SYNC", 88);
     if (!g_cfg.laptop_sync) {
         log_msg("INFO", "Laptop sync disabled (laptop_sync=0)");
         return;
@@ -971,6 +975,7 @@ static void fill_sharepoint_excel(const char *conf_path)
     char cmd[1024];
     const char *py;
 
+    set_monitor_flow_pct("FILL SHEET", 93);
     if (!g_cfg.sharepoint_excel) {
         log_msg("INFO", "SharePoint Excel fill disabled (sharepoint_excel=0)");
         return;
@@ -1001,6 +1006,7 @@ static void collect_us_via_jump(const char *conf_path)
     char cmd[1024];
     const char *py;
 
+    set_monitor_flow_pct("US SSH", 48);
     if (!g_cfg.jump_host[0]) {
         log_msg("INFO", "US jump_host empty — skip Virtual Station collect");
         return;
@@ -1030,6 +1036,7 @@ static void restore_lab_wifi(void)
 static void on_signal(int sig)
 {
     (void)sig;
+    write_monitor_status(0, 0, "Stopped by signal");
     restore_lab_wifi();
     _exit(1);
 }
@@ -1063,10 +1070,12 @@ int main(int argc, char **argv)
         return 1;
 
     ensure_parent_dir(g_cfg.log_file);
+    ensure_parent_dir("output/.keep");
     g_log = fopen(g_cfg.log_file, "a");
     if (!g_log)
         log_msg("WARN", "Cannot open log file %s, continuing on stderr only", g_cfg.log_file);
 
+    set_monitor_flow_pct("SETUP", 2);
     log_msg("INFO", "=== Simplifi daily monitor start ===");
     log_msg("INFO", "Config: %s  routers: %d  csv: %s", conf_path, g_cfg.router_count,
             g_cfg.output_csv);
@@ -1082,6 +1091,7 @@ int main(int argc, char **argv)
     signal(SIGINT, on_signal);
     signal(SIGTERM, on_signal);
 
+    set_monitor_flow_pct("LAB WIFI", 5);
     log_msg("INFO", "Joining lab network first: '%s'", g_cfg.lab_ssid_5g);
     if (wifi_connect_lab() != 0)
         log_msg("WARN", "Could not join lab WiFi at start; continuing with router cycle");
@@ -1089,6 +1099,12 @@ int main(int argc, char **argv)
 
     int vn_seen = 0;
     int vn_ssh_ok = 1;
+    int vn_total = 0;
+    for (int i = 0; i < g_cfg.router_count; i++) {
+        if (!router_is_tailscale(&g_cfg.routers[i]))
+            vn_total++;
+    }
+    int vn_done = 0;
     for (int i = 0; i < g_cfg.router_count; i++) {
         Router *r = &g_cfg.routers[i];
         MonitorRow row;
@@ -1097,6 +1113,12 @@ int main(int argc, char **argv)
             continue;
 
         vn_seen++;
+        {
+            int pct = 10;
+            if (vn_total > 0)
+                pct = 10 + (vn_done * 35) / vn_total;
+            set_monitor_flow_pct("VN SSH", pct);
+        }
         row_init(&row, r);
 
         log_msg("INFO", "----- [%d/%d] %s  IMEI=%s  SSID=%s -----",
@@ -1109,6 +1131,7 @@ int main(int argc, char **argv)
             snprintf(row.wifi_sim_status, sizeof(row.wifi_sim_status), "FAIL");
             csv_upsert(&row);
             vn_ssh_ok = 0;
+            vn_done++;
             continue;
         }
 
@@ -1128,8 +1151,10 @@ int main(int argc, char **argv)
 
         wifi_disconnect();
         sleep(2);
+        vn_done++;
     }
 
+    set_monitor_flow_pct("LAB WIFI", 46);
     restore_lab_wifi();
     sleep(5);
 
@@ -1145,7 +1170,9 @@ int main(int argc, char **argv)
     send_fax_stations();
     sync_to_laptop();
     fill_sharepoint_excel(conf_path);
+    set_monitor_flow_pct("DONE", 100);
     log_msg("INFO", "=== Simplifi daily monitor finished ===");
+    write_monitor_status(0, 100, "Daily monitor finished");
     if (g_log)
         fclose(g_log);
     return 0;

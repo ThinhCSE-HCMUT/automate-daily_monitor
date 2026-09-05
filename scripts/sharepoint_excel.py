@@ -83,7 +83,9 @@ def resolve_sheets(monitor_conf: str):
 
 def log(level: str, msg: str) -> None:
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    line = f"[{now}] [{level}] {msg}"
+    flow = (os.environ.get("MONITOR_FLOW") or "").strip()
+    tag = f" [{flow}]" if flow else ""
+    line = f"[{now}] [{level}]{tag} {msg}"
     try:
         print(line, flush=True)
     except UnicodeEncodeError:

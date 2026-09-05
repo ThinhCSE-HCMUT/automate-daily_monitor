@@ -12,6 +12,60 @@
 #include <unistd.h>
 
 FILE *g_log = NULL;
+char g_flow[48] = "SETUP";
+static int g_flow_pct = 0;
+
+void write_monitor_status(int running, int percent, const char *message)
+{
+    FILE *fp = fopen("output/monitor_status.json", "w");
+    if (!fp)
+        return;
+    time_t t = time(NULL);
+    struct tm tm;
+    char ts[32];
+    localtime_r(&t, &tm);
+    strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm);
+    /* minimal JSON — escape quotes in message */
+    char safe[512];
+    size_t j = 0;
+    const char *src = message ? message : "";
+    for (size_t i = 0; src[i] && j + 2 < sizeof(safe); i++) {
+        char c = src[i];
+        if (c == '"' || c == '\\') {
+            safe[j++] = '\\';
+            safe[j++] = c;
+        } else if (c == '\n' || c == '\r') {
+            safe[j++] = ' ';
+        } else {
+            safe[j++] = c;
+        }
+    }
+    safe[j] = '\0';
+    fprintf(fp,
+            "{\"running\":%s,\"flow\":\"%s\",\"percent\":%d,\"message\":\"%s\",\"updated\":\"%s\"}\n",
+            running ? "true" : "false",
+            g_flow[0] ? g_flow : "SETUP",
+            percent < 0 ? 0 : (percent > 100 ? 100 : percent),
+            safe,
+            ts);
+    fclose(fp);
+}
+
+void set_monitor_flow_pct(const char *flow, int percent)
+{
+    if (flow && flow[0]) {
+        snprintf(g_flow, sizeof(g_flow), "%s", flow);
+        setenv("MONITOR_FLOW", g_flow, 1);
+    }
+    if (percent >= 0)
+        g_flow_pct = percent > 100 ? 100 : percent;
+    write_monitor_status(1, g_flow_pct, g_flow);
+}
+
+void set_monitor_flow(const char *flow)
+{
+    set_monitor_flow_pct(flow, g_flow_pct);
+}
 
 void log_msg(const char *level, const char *fmt, ...)
 {
@@ -23,14 +77,14 @@ void log_msg(const char *level, const char *fmt, ...)
 
     va_list ap;
     va_start(ap, fmt);
-    fprintf(stderr, "[%s] [%s] ", ts, level);
+    fprintf(stderr, "[%s] [%s] [%s] ", ts, level, g_flow[0] ? g_flow : "SETUP");
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     va_end(ap);
 
     if (g_log) {
         va_start(ap, fmt);
-        fprintf(g_log, "[%s] [%s] ", ts, level);
+        fprintf(g_log, "[%s] [%s] [%s] ", ts, level, g_flow[0] ? g_flow : "SETUP");
         vfprintf(g_log, fmt, ap);
         fprintf(g_log, "\n");
         fflush(g_log);

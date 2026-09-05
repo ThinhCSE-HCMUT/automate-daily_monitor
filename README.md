@@ -99,7 +99,7 @@ Details → [docs/TOOLS.md](docs/TOOLS.md) · Hardware → [docs/HARDWARE.md](do
 └── *.conf.example       # Safe config templates
 ```
 
-UI screenshots (add your PNGs here):
+UI screenshots:
 
 ```text
 docs/assets/ui-monitor-progress.png

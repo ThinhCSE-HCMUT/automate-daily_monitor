@@ -23,37 +23,22 @@ This project runs that pipeline **unattended every morning** on a Raspberry Pi, 
 
 ## Architecture (one glance)
 
+GitHub’s Mermaid layout differs from some IDE previews — this diagram is kept **top-down and linear** so it stays readable on github.com.
+
 ```mermaid
-flowchart LR
-  subgraph Pi["Raspberry Pi"]
-    M["./monitor (C)"]
-    CSV["daily_monitor.csv"]
-    WEB["config_web.py\n08:00–11:00"]
-  end
-  subgraph VN["Vietnam lab"]
-    VL["Voicelink ×2"]
-    FX["Fax ×2"]
-  end
-  subgraph US["United States"]
-    JUMP["Windows jump laptop\n(Tailscale)"]
-    VS["Virtual ×2"]
-  end
-  SP["SharePoint Excel"]
-  PORTAL["Simplifi Portal"]
-  FAX["Faxback"]
-
-  M -->|Wi‑Fi hop + SSH| VL
-  M -->|Wi‑Fi hop + SSH| FX
-  M -->|SSH job| JUMP
-  JUMP -->|Wi‑Fi hop + SSH| VS
-  M --> CSV
-  M --> PORTAL
-  M --> FAX
-  M --> SP
+flowchart TB
+  WEB["config_web.py · 08:00–11:00"]
+  M["./monitor · C orchestrator"]
   WEB -.->|edit conf / Start-Stop| M
+
+  M --> VN["VN: Voicelink ×2 + Fax ×2\nWi-Fi hop + SSH"]
+  M --> US["US: Tailscale jump laptop\n→ Virtual ×2"]
+  M --> CSV["daily_monitor.csv"]
+
+  M --> PORTAL["Simplifi Portal logs"]
+  M --> FAX["Faxback"]
+  M --> SP["SharePoint Excel"]
 ```
-
-
 
 Full stage list → [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 

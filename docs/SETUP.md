@@ -9,14 +9,14 @@ Step-by-step to **build**, **configure**, **run**, and **schedule** the daily mo
 ## 0. Prerequisites
 
 
-| Need                                                  | Notes                                     |
-| ----------------------------------------------------- | ----------------------------------------- |
-| Raspberry Pi on lab network                           | See [HARDWARE.md](HARDWARE.md)            |
-| Git checkout of this repo | e.g. `https://github.com/ThinhCSE-HCMUT/automate-daily_monitor` |
-| `sudo` for apt / systemd                              |                                           |
-| Station Wi‑Fi PSKs, portal/fax/SharePoint credentials | Keep out of git                           |
-| Tailscale on Pi **and** US jump laptop                | For Virtual stations                      |
-| Timezone                                              | Prefer `Asia/Ho_Chi_Minh` for 08:00 local |
+| Need                                                  | Notes                                                      |
+| ----------------------------------------------------- | ---------------------------------------------------------- |
+| Raspberry Pi on lab network                           | See [HARDWARE.md](HARDWARE.md)                             |
+| Git checkout of this repo                             | `https://github.com/ThinhCSE-HCMUT/automate-daily_monitor` |
+| `sudo` for apt / systemd                              |                                                            |
+| Station Wi‑Fi PSKs, portal/fax/SharePoint credentials | Keep out of git                                            |
+| Tailscale on Pi **and** US jump laptop                | For Virtual stations                                       |
+| Timezone                                              | Prefer `Asia/Ho_Chi_Minh` for 08:00 local                  |
 
 
 ```bash
@@ -25,6 +25,8 @@ timedatectl
 ```
 
 ---
+
+
 
 ## 1. Clone & packages
 
@@ -42,6 +44,8 @@ sudo apt-get install -y build-essential network-manager openssh-client \
 
 ---
 
+
+
 ## 2. Build C monitor + Python venv
 
 ```bash
@@ -57,6 +61,8 @@ Verify:
 ```
 
 ---
+
+
 
 ## 3. Configuration files
 
@@ -98,6 +104,8 @@ Templates ship as `*.conf.example` in the repo; live `*.conf` files stay gitigno
 
 ---
 
+
+
 ## 4. First manual run
 
 ```bash
@@ -121,6 +129,8 @@ head output/daily_monitor.csv
 
 ---
 
+
+
 ## 5. Config web UI (manual)
 
 ```bash
@@ -135,6 +145,8 @@ Useful tabs: **Stations**, **VN / US Network**, **Monitor Progress** (Start/Stop
 Stop manually: `Ctrl+C`, or if started via systemd — see below.
 
 ---
+
+
 
 ## 6. systemd — daily `./monitor` at 08:00
 
@@ -158,6 +170,8 @@ sudo systemctl start simplifi-monitor.service
 ```
 
 ---
+
+
 
 ## 7. systemd — config web 08:00 → ~11:00
 
@@ -189,6 +203,8 @@ systemctl is-enabled simplifi-config-web.timer
 
 ---
 
+
+
 ## 8. US jump laptop (Virtual stations)
 
 High-level checklist (exact Windows paths depend on the jump laptop image):
@@ -200,6 +216,8 @@ High-level checklist (exact Windows paths depend on the jump laptop image):
 5. Dry-run from the Pi when ready: `.venv/bin/python3 scripts/us_jump_run.py --conf monitor.conf`
 
 ---
+
+
 
 ## 9. Troubleshooting cheatsheet
 
@@ -217,6 +235,8 @@ High-level checklist (exact Windows paths depend on the jump laptop image):
 
 
 ---
+
+
 
 ## Quick command index
 

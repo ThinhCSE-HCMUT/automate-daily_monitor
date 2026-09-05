@@ -6,11 +6,11 @@
 sharepoint.conf
 fax.conf
 portal.conf
+monitor.conf
 token_cache.bin
 *.xlsx
-*.example
 __pycache__/
 *.pyc
-
-monitor.conf
 scripts/fax_uploads/
+router_infor.local.md
+

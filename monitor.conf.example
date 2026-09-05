@@ -18,8 +18,8 @@ log_file=output/monitor.log
 portal_logs=1
 portal_conf=portal.conf
 
-# AI analysis of portal logs -> CSV Note column. Needs: pip install cursor-sdk
-log_analysis=1
+# Portal log download (no separate AI analysis stage in this repo)
+log_analysis=0
 cursor_api_key=
 fax_send=1
 fax_conf=fax.conf
@@ -29,7 +29,7 @@ sharepoint_excel=1
 sharepoint_conf=sharepoint.conf
 
 # US Windows jump laptop (same Tailscale tailnet as the Pi)
-jump_host=100.109.148.118
+jump_host=
 jump_user=simplifi
 jump_restore_ssid=
 jump_wait_sec=600

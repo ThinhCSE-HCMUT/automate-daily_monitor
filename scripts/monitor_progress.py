@@ -225,9 +225,66 @@ def _station_type(name: str) -> str:
     return "voicelink"
 
 
+HISTORY_MAX_DAYS = 14
+
+# Display columns per station type (CSV source key → UI label).
+DETAIL_COLUMNS = {
+    "voicelink": [
+        ("Date", "Date"),
+        ("Anydesk ID", "Anydesk ID"),
+        ("IMEI", "IMEI"),
+        ("Firmware Version", "Firmware Version"),
+        ("Uptime (hh:mm)", "Uptime (days, hh:mm)"),
+        ("Voicelink/Fax status", "Voicelink Status"),
+        ("Carrier", "Carrier"),
+        ("Phone", "Phone"),
+        ("RSSI (dBm)", "RSSI (dBm)"),
+        ("WiFi Status (Sim Data)", "WiFi Status (Sim Data)"),
+        ("SSH Access", "SSH Access"),
+    ],
+    "fax": [
+        ("Date", "Date"),
+        ("Anydesk ID", "Anydesk ID"),
+        ("IMEI", "IMEI"),
+        ("Firmware Version", "Firmware Version"),
+        ("Uptime (hh:mm)", "Uptime (days, hh:mm)"),
+        ("Voicelink/Fax status", "Fax Status"),
+        ("Carrier", "Carrier"),
+        ("Phone", "Phone"),
+        ("RSSI (dBm)", "RSSI (dBm)"),
+        ("WiFi Status (Sim Data)", "WiFi Status (Sim Data)"),
+        ("SSH Access", "SSH Access"),
+    ],
+    "virtual": [
+        ("Date", "Date"),
+        ("Anydesk ID", "Anydesk ID"),
+        ("IMEI", "IMEI"),
+        ("Firmware Version", "Firmware Version"),
+        ("Uptime (hh:mm)", "Uptime (days, hh:mm)"),
+        ("Carrier", "Carrier"),
+        ("Phone", "Phone"),
+        ("RSSI (dBm)", "RSSI (dBm)"),
+        ("WiFi Status (Sim Data)", "WiFi Status (Sim Data)"),
+        ("SSH Access", "SSH Access"),
+    ],
+}
+
+
+def _load_csv_rows(csv_path: str) -> list[dict[str, str]]:
+    import csv
+
+    rows: list[dict[str, str]] = []
+    if not os.path.isfile(csv_path):
+        return rows
+    with open(csv_path, newline="", encoding="utf-8-sig") as f:
+        reader = csv.DictReader(f)
+        for raw in reader:
+            rows.append({(k or "").strip(): (v or "").strip() for k, v in raw.items() if k})
+    return rows
+
+
 def daily_summary(monitor_conf: str) -> dict[str, Any]:
     """Build today's CSV summary for the Monitor Progress UI."""
-    import csv
     from datetime import datetime
 
     from stations_lib import load_stations
@@ -239,15 +296,11 @@ def daily_summary(monitor_conf: str) -> dict[str, Any]:
     )
     csv_path = resolve_csv_file(root, monitor_conf)
     by_imei: dict[str, dict[str, str]] = {}
-    if os.path.isfile(csv_path):
-        with open(csv_path, newline="", encoding="utf-8-sig") as f:
-            reader = csv.DictReader(f)
-            for raw in reader:
-                rec = { (k or "").strip(): (v or "").strip() for k, v in raw.items() if k }
-                day = (rec.get("Date") or "")[:10]
-                imei = rec.get("IMEI") or ""
-                if day == today and imei:
-                    by_imei[imei] = rec
+    for rec in _load_csv_rows(csv_path):
+        day = (rec.get("Date") or "")[:10]
+        imei = rec.get("IMEI") or ""
+        if day == today and imei:
+            by_imei[imei] = rec
 
     filled = 0
     missing = 0
@@ -261,24 +314,26 @@ def daily_summary(monitor_conf: str) -> dict[str, Any]:
         stype = _station_type(name)
         rec = by_imei.get(imei)
         if not rec:
-            # No today's row — all info missing; SSH/WiFi treated as fail/absent
             for _ in INFO_FIELDS:
                 missing += 1
-            cells = {
-                "ssh": "na",
-                "wifi": "na",
-                "vfax": "na",
-                "firmware": "N/A",
-                "uptime": "N/A",
-                "overall": "fail",
-            }
+            # Voicelink/Fax still need a Voice/Fax value; Virtual does not apply.
+            if stype in ("voicelink", "fax"):
+                missing += 1
+                vfax = "na"
+            else:
+                vfax = "no_apply"
             rows_out.append(
                 {
                     "name": name,
                     "imei": imei,
                     "type": stype,
                     "present": False,
-                    **cells,
+                    "ssh": "na",
+                    "wifi": "na",
+                    "vfax": vfax,
+                    "firmware": "N/A",
+                    "uptime": "N/A",
+                    "overall": "fail",
                 }
             )
             continue
@@ -292,15 +347,22 @@ def daily_summary(monitor_conf: str) -> dict[str, Any]:
         ssh = _status_kind(rec.get("SSH Access") or "")
         wifi = _status_kind(rec.get("WiFi Status (Sim Data)") or "")
         vfax_raw = rec.get("Voicelink/Fax status") or ""
-        # Voicelink/Virtual intentionally N/A for voice/fax column — don't score as fail
-        if stype in ("voicelink", "virtual") and _is_na(vfax_raw):
-            vfax = "na"
+
+        if stype == "virtual":
+            # Voice/Fax does not apply — never count toward Needs manual / PASS / FAIL.
+            vfax = "no_apply"
         else:
-            vfax = _status_kind(vfax_raw)
-            if vfax == "pass":
-                pass_n += 1
-            elif vfax == "fail":
-                fail_n += 1
+            # Voicelink + Fax: N/A means still needs manual check.
+            if _is_na(vfax_raw):
+                vfax = "na"
+                missing += 1
+            else:
+                vfax = _status_kind(vfax_raw)
+                filled += 1
+                if vfax == "pass":
+                    pass_n += 1
+                elif vfax == "fail":
+                    fail_n += 1
 
         for kind in (ssh, wifi):
             if kind == "pass":
@@ -336,6 +398,55 @@ def daily_summary(monitor_conf: str) -> dict[str, Any]:
         "stations": rows_out,
         "station_count": len(rows_out),
         "present_count": sum(1 for r in rows_out if r.get("present")),
+    }
+
+
+def station_history(
+    monitor_conf: str, imei: str, days: int = HISTORY_MAX_DAYS
+) -> dict[str, Any]:
+    """Last N days (max 14) of CSV rows for one station, columns by type."""
+    from stations_lib import load_stations
+
+    imei = (imei or "").strip()
+    days = max(1, min(HISTORY_MAX_DAYS, int(days or HISTORY_MAX_DAYS)))
+    root = project_root(monitor_conf)
+    stations = load_stations(
+        monitor_conf if os.path.isabs(monitor_conf) else os.path.join(root, monitor_conf)
+    )
+    st = next((s for s in stations if (s.get("imei") or "") == imei), None)
+    name = (st.get("name") if st else "") or imei or "Station"
+    stype = _station_type(name)
+    columns = DETAIL_COLUMNS.get(stype) or DETAIL_COLUMNS["voicelink"]
+    csv_path = resolve_csv_file(root, monitor_conf)
+
+    by_day: dict[str, dict[str, str]] = {}
+    for rec in _load_csv_rows(csv_path):
+        if (rec.get("IMEI") or "") != imei:
+            continue
+        day = (rec.get("Date") or "")[:10]
+        if len(day) >= 10:
+            by_day[day] = rec
+
+    sorted_days = sorted(by_day.keys(), reverse=True)[:days]
+    headers = [label for _, label in columns]
+    rows: list[dict[str, str]] = []
+    for day in sorted_days:
+        rec = by_day[day]
+        out: dict[str, str] = {}
+        for src, label in columns:
+            out[label] = rec.get(src) or "N/A"
+        rows.append(out)
+
+    return {
+        "imei": imei,
+        "name": name,
+        "type": stype,
+        "days_requested": days,
+        "days_available": len(rows),
+        "max_days": HISTORY_MAX_DAYS,
+        "headers": headers,
+        "rows": rows,
+        "csv": csv_path,
     }
 
 

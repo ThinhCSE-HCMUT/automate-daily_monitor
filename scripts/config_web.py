@@ -18,7 +18,7 @@ import sys
 from email import message_from_bytes
 from email.policy import HTTP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import parse_qs
+from urllib.parse import parse_qs, urlparse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 if HERE not in sys.path:
@@ -124,8 +124,8 @@ TAB_INFO = {
         "used to reach Virtual Stations abroad."
     ),
     "progress": (
-        "Watch live daily-monitor progress, read a plain-English status line, "
-        "Start or Stop the job, and review today’s PASS/FAIL summary for all stations."
+        "Watch live daily-monitor progress, Start or Stop the job, review today’s summary, "
+        "and open Detail for up to 14 days of history per station."
     ),
     "guide": (
         "Full walkthrough of all settings tabs. Read a section here, then switch tabs to edit values."
@@ -760,6 +760,19 @@ input[type=text]:focus, input[type=password]:focus {{
 }}
 .summary-table tr:last-child td {{ border-bottom: 0; }}
 .summary-table tr:hover td {{ background: #f7faff; }}
+.fw-clamp {{
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  max-width: 11rem;
+  line-height: 1.35;
+  white-space: normal;
+}}
 .st-name {{ font-weight: 700; color: var(--ink); }}
 .st-imei {{ display: block; margin-top: 2px; color: var(--muted); font-size: .75rem; font-family: ui-monospace, Consolas, monospace; }}
 .st-type {{
@@ -776,10 +789,58 @@ input[type=text]:focus, input[type=password]:focus {{
 .pill-pass {{ background: #dcfce7; color: #166534; }}
 .pill-fail {{ background: #fee2e2; color: #991b1b; }}
 .pill-na {{ background: #eef2f7; color: #64748b; }}
+.pill-no-apply {{ background: #f1f5f9; color: #475569; min-width: 72px; }}
 .row-pass {{ box-shadow: inset 3px 0 0 #22c55e; }}
 .row-fail {{ box-shadow: inset 3px 0 0 #ef4444; }}
 .row-na {{ box-shadow: inset 3px 0 0 #94a3b8; }}
 .summary-empty {{ color: var(--muted); font-size: .92rem; margin: 0; padding: 8px 2px; }}
+.btn-detail {{
+  border: 1px solid #c5d7ef; background: #fff; color: var(--accent-2);
+  border-radius: 10px; padding: 7px 12px; font-size: .82rem; font-weight: 700;
+  cursor: pointer; display: inline-flex; align-items: center; gap: 6px;
+  white-space: nowrap; transition: background .15s ease, border-color .15s ease;
+}}
+.btn-detail:hover {{ background: #eef5ff; border-color: var(--accent); }}
+.btn-detail svg {{ flex-shrink: 0; }}
+.progress-main.is-hidden, .station-detail.is-hidden {{ display: none !important; }}
+.station-detail {{ margin-top: 4px; }}
+.detail-top {{
+  display: flex; flex-direction: column; align-items: flex-start;
+  gap: 12px; margin-bottom: 14px;
+}}
+.btn-back {{
+  border: 0; background: #eef2f7; color: var(--ink); border-radius: 10px;
+  padding: 9px 14px; font-size: .92rem; font-weight: 700; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 8px;
+}}
+.btn-back:hover {{ background: #e2e8f0; }}
+.detail-title-block h3 {{ margin: 0 0 4px; font-size: 1.15rem; color: var(--ink); }}
+.detail-meta {{ color: var(--muted); font-size: .88rem; }}
+.detail-meta code {{
+  font-family: ui-monospace, Consolas, monospace; font-size: .82rem;
+  background: #f1f5f9; padding: 1px 6px; border-radius: 6px;
+}}
+.detail-table-wrap {{
+  overflow-x: auto; border: 1px solid var(--line); border-radius: 14px; background: #fbfcfe;
+}}
+.detail-table {{
+  width: 100%; border-collapse: collapse; min-width: 900px; font-size: .86rem;
+}}
+.detail-table th {{
+  text-align: left; padding: 10px 11px; color: var(--muted); font-size: .72rem;
+  text-transform: uppercase; letter-spacing: .03em; border-bottom: 1px solid var(--line);
+  background: #f3f7fc; white-space: nowrap; position: sticky; top: 0;
+}}
+.detail-table td {{
+  padding: 10px 11px; border-bottom: 1px solid #e8eef6; vertical-align: middle;
+  white-space: nowrap;
+}}
+.detail-table tr:last-child td {{ border-bottom: 0; }}
+.detail-table tr:hover td {{ background: #f7faff; }}
+.detail-table .fw-clamp {{ max-width: 14rem; }}
+.detail-cell-pass {{ color: #166534; font-weight: 700; }}
+.detail-cell-fail {{ color: #991b1b; font-weight: 700; }}
+.detail-empty {{ color: var(--muted); margin: 0; padding: 16px; }}
 @media (max-width: 800px) {{
   .summary-stats {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }}
 }}
@@ -906,71 +967,94 @@ input[type=text]:focus, input[type=password]:focus {{
 
     <section class="panel{' active' if tab == 'progress' else ''}" id="tab-progress">
       <div class="card progress-card">
-        <div class="progress-flow">
-          <span class="progress-flow-name" id="prog-flow">IDLE</span>
-          <span class="progress-pct" id="prog-pct">0%</span>
-        </div>
-        <div class="progress-track" aria-hidden="true">
-          <div class="progress-fill" id="prog-fill"></div>
-        </div>
-        <p class="progress-msg" id="prog-msg">Monitor is idle. Press Start to run the daily job.</p>
-        <p class="progress-raw" id="prog-raw"></p>
-        <div class="monitor-actions">
-          <button type="button" class="btn btn-primary" id="btn-mon-start" onclick="monitorStart()">
-            <span class="btn-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
-            </span>
-            <span>Start</span>
-          </button>
-          <button type="button" class="btn btn-stop" id="btn-mon-stop" onclick="monitorStop()" disabled>
-            <span class="btn-icon" aria-hidden="true">
-              <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>
-            </span>
-            <span>Stop</span>
-          </button>
-        </div>
-        <div class="summary-wrap" id="daily-summary">
-          <div class="summary-head">
-            <h3>Daily Monitor Summary</h3>
-            <span class="summary-date" id="sum-date">Today</span>
+        <div class="progress-main" id="progress-main">
+          <div class="progress-flow">
+            <span class="progress-flow-name" id="prog-flow">IDLE</span>
+            <span class="progress-pct" id="prog-pct">0%</span>
           </div>
-          <div class="summary-stats">
-            <div class="stat-chip stat-filled">
-              <span class="stat-label">Has data</span>
-              <span class="stat-value" id="sum-filled">0</span>
-              <span class="stat-hint">Fields with a real value</span>
+          <div class="progress-track" aria-hidden="true">
+            <div class="progress-fill" id="prog-fill"></div>
+          </div>
+          <p class="progress-msg" id="prog-msg">Monitor is idle. Press Start to run the daily job.</p>
+          <p class="progress-raw" id="prog-raw"></p>
+          <div class="monitor-actions">
+            <button type="button" class="btn btn-primary" id="btn-mon-start" onclick="monitorStart()">
+              <span class="btn-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M8 5v14l11-7z"/></svg>
+              </span>
+              <span>Start</span>
+            </button>
+            <button type="button" class="btn btn-stop" id="btn-mon-stop" onclick="monitorStop()" disabled>
+              <span class="btn-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M6 6h12v12H6z"/></svg>
+              </span>
+              <span>Stop</span>
+            </button>
+          </div>
+          <div class="summary-wrap" id="daily-summary">
+            <div class="summary-head">
+              <h3>Daily Monitor Summary</h3>
+              <span class="summary-date" id="sum-date">Today</span>
             </div>
-            <div class="stat-chip stat-missing">
-              <span class="stat-label">Needs manual</span>
-              <span class="stat-value" id="sum-missing">0</span>
-              <span class="stat-hint">Still N/A today</span>
+            <div class="summary-stats">
+              <div class="stat-chip stat-filled">
+                <span class="stat-label">Has data</span>
+                <span class="stat-value" id="sum-filled">0</span>
+                <span class="stat-hint">Fields with a real value</span>
+              </div>
+              <div class="stat-chip stat-missing">
+                <span class="stat-label">Needs manual</span>
+                <span class="stat-value" id="sum-missing">0</span>
+                <span class="stat-hint">N/A incl. Voice/Fax (VL/Fax)</span>
+              </div>
+              <div class="stat-chip stat-pass">
+                <span class="stat-label">PASS</span>
+                <span class="stat-value" id="sum-pass">0</span>
+                <span class="stat-hint">SSH / Wi‑Fi / Fax checks</span>
+              </div>
+              <div class="stat-chip stat-fail">
+                <span class="stat-label">FAIL</span>
+                <span class="stat-value" id="sum-fail">0</span>
+                <span class="stat-hint">Checks that failed</span>
+              </div>
             </div>
-            <div class="stat-chip stat-pass">
-              <span class="stat-label">PASS</span>
-              <span class="stat-value" id="sum-pass">0</span>
-              <span class="stat-hint">SSH / Wi‑Fi / Fax checks</span>
-            </div>
-            <div class="stat-chip stat-fail">
-              <span class="stat-label">FAIL</span>
-              <span class="stat-value" id="sum-fail">0</span>
-              <span class="stat-hint">Checks that failed</span>
+            <div class="summary-table-wrap">
+              <table class="summary-table" aria-label="Today station summary">
+                <thead>
+                  <tr>
+                    <th>Station</th>
+                    <th>SSH</th>
+                    <th>Wi‑Fi / SIM</th>
+                    <th>Voice / Fax</th>
+                    <th>Firmware</th>
+                    <th>Uptime</th>
+                    <th>Overall</th>
+                    <th>Detail</th>
+                  </tr>
+                </thead>
+                <tbody id="sum-tbody">
+                  <tr><td colspan="8"><p class="summary-empty">No station summary yet — run the daily monitor.</p></td></tr>
+                </tbody>
+              </table>
             </div>
           </div>
-          <div class="summary-table-wrap">
-            <table class="summary-table" aria-label="Today station summary">
-              <thead>
-                <tr>
-                  <th>Station</th>
-                  <th>SSH</th>
-                  <th>Wi‑Fi / SIM</th>
-                  <th>Voice / Fax</th>
-                  <th>Firmware</th>
-                  <th>Uptime</th>
-                  <th>Overall</th>
-                </tr>
-              </thead>
-              <tbody id="sum-tbody">
-                <tr><td colspan="7"><p class="summary-empty">No station summary yet — run the daily monitor.</p></td></tr>
+        </div>
+        <div class="station-detail is-hidden" id="station-detail">
+          <div class="detail-top">
+            <button type="button" class="btn-back" onclick="closeStationDetail()">
+              <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path fill="currentColor" d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20v-2z"/></svg>
+              <span>Back to Monitor Progress</span>
+            </button>
+            <div class="detail-title-block">
+              <h3 id="detail-name">Station</h3>
+              <div class="detail-meta" id="detail-meta"></div>
+            </div>
+          </div>
+          <div class="detail-table-wrap">
+            <table class="detail-table" aria-label="Station history">
+              <thead id="detail-thead"></thead>
+              <tbody id="detail-tbody">
+                <tr><td><p class="detail-empty">Loading…</p></td></tr>
               </tbody>
             </table>
           </div>
@@ -1032,6 +1116,8 @@ input[type=text]:focus, input[type=password]:focus {{
           <li><strong>Start</strong> launches <code>./monitor</code> on the Pi (disabled while a run is active).</li>
           <li><strong>Stop</strong> sends a terminate signal to the running job (disabled when idle).</li>
           <li><strong>Daily Monitor Summary</strong> shows today’s filled vs N/A fields, PASS/FAIL counts, and a color-coded table for all stations.</li>
+          <li><strong>Needs manual</strong> counts info fields still N/A, plus Voice/Fax N/A on Voicelink and Fax stations. Virtual Voice/Fax shows <em>No Apply</em> and is not counted.</li>
+          <li><strong>Detail</strong> opens up to the last 14 days of that station (or fewer if less history exists). Use Back to return here.</li>
         </ul>
       </div>
     </section>
@@ -1066,6 +1152,7 @@ input[type=text]:focus, input[type=password]:focus {{
 const TAB_INFO = {tab_info_json};
 const NO_SAVE_TABS = new Set(['guide', 'progress']);
 let progressTimer = null;
+let detailOpen = false;
 function showTab(id) {{
   document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
   document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -1080,22 +1167,27 @@ function showTab(id) {{
   if (actions) actions.classList.toggle('is-hidden', NO_SAVE_TABS.has(id));
   if (progressTimer) {{ clearInterval(progressTimer); progressTimer = null; }}
   if (id === 'progress') {{
-    refreshProgress();
-    progressTimer = setInterval(refreshProgress, 2000);
+    if (!detailOpen) {{
+      refreshProgress();
+      progressTimer = setInterval(refreshProgress, 2000);
+    }}
+  }} else {{
+    closeStationDetail(false);
   }}
   try {{ history.replaceState(null, '', '#' + id); }} catch (e) {{}}
 }}
 function pill(kind) {{
   const k = (kind || 'na').toLowerCase();
-  const label = k === 'pass' ? 'PASS' : (k === 'fail' ? 'FAIL' : 'N/A');
-  const cls = k === 'pass' ? 'pill-pass' : (k === 'fail' ? 'pill-fail' : 'pill-na');
-  return `<span class="pill ${{cls}}">${{label}}</span>`;
+  if (k === 'pass') return '<span class="pill pill-pass">PASS</span>';
+  if (k === 'fail') return '<span class="pill pill-fail">FAIL</span>';
+  if (k === 'no_apply' || k === 'no-apply') return '<span class="pill pill-no-apply">No Apply</span>';
+  return '<span class="pill pill-na">N/A</span>';
 }}
 function escHtml(s) {{
   return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }}
 function applySummary(sum) {{
-  if (!sum) return;
+  if (!sum || detailOpen) return;
   const dateEl = document.getElementById('sum-date');
   const filled = document.getElementById('sum-filled');
   const missing = document.getElementById('sum-missing');
@@ -1110,7 +1202,7 @@ function applySummary(sum) {{
   if (!tbody) return;
   const stations = sum.stations || [];
   if (!stations.length) {{
-    tbody.innerHTML = '<tr><td colspan="7"><p class="summary-empty">No stations configured.</p></td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8"><p class="summary-empty">No stations configured.</p></td></tr>';
     return;
   }}
   tbody.innerHTML = stations.map(st => {{
@@ -1120,20 +1212,101 @@ function applySummary(sum) {{
     const rowCls = overall === 'pass' ? 'row-pass' : (overall === 'fail' ? 'row-fail' : 'row-na');
     const fw = (st.firmware && st.firmware !== 'N/A') ? st.firmware : '—';
     const up = (st.uptime && st.uptime !== 'N/A') ? st.uptime : '—';
+    const imeiAttr = escHtml(st.imei || '');
+    const fwTitle = fw !== '—' ? ` title="${{escHtml(fw)}}"` : '';
     return `<tr class="${{rowCls}}">
       <td>
         <span class="st-name">${{escHtml(st.name || 'Station')}}</span>
-        <span class="st-imei">${{escHtml(st.imei || '')}}</span>
+        <span class="st-imei">${{imeiAttr}}</span>
         <span class="st-type ${{typeCls}}">${{typeLabel}}</span>
       </td>
       <td>${{pill(st.ssh)}}</td>
       <td>${{pill(st.wifi)}}</td>
       <td>${{pill(st.vfax)}}</td>
-      <td>${{escHtml(fw)}}</td>
+      <td><span class="fw-clamp"${{fwTitle}}>${{escHtml(fw)}}</span></td>
       <td>${{escHtml(up)}}</td>
       <td>${{pill(overall)}}</td>
+      <td>
+        <button type="button" class="btn-detail" onclick="openStationDetail('${{imeiAttr}}')">
+          <svg viewBox="0 0 24 24" width="15" height="15" aria-hidden="true"><path fill="currentColor" d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zm1 13H9v-2h6v2zm0-4H9V9h6v2zm-1-5V3.5L18.5 9H14z"/></svg>
+          <span>Detail</span>
+        </button>
+      </td>
     </tr>`;
   }}).join('');
+}}
+function statusCellClass(val) {{
+  const u = String(val || '').trim().toUpperCase();
+  if (u === 'PASS') return 'detail-cell-pass';
+  if (u === 'FAIL') return 'detail-cell-fail';
+  return '';
+}}
+function applyStationDetail(data) {{
+  const nameEl = document.getElementById('detail-name');
+  const metaEl = document.getElementById('detail-meta');
+  const thead = document.getElementById('detail-thead');
+  const tbody = document.getElementById('detail-tbody');
+  const typeLabel = data.type === 'fax' ? 'Fax' : (data.type === 'virtual' ? 'Virtual' : 'Voicelink');
+  if (nameEl) nameEl.textContent = data.name || 'Station';
+  if (metaEl) {{
+    metaEl.innerHTML = `${{escHtml(typeLabel)}} · IMEI <code>${{escHtml(data.imei || '')}}</code> · showing ${{data.days_available || 0}} of last ${{data.max_days || 14}} days`;
+  }}
+  const headers = data.headers || [];
+  const rows = data.rows || [];
+  if (thead) {{
+    thead.innerHTML = '<tr>' + headers.map(h => `<th>${{escHtml(h)}}</th>`).join('') + '</tr>';
+  }}
+  if (!tbody) return;
+  if (!rows.length) {{
+    tbody.innerHTML = `<tr><td colspan="${{Math.max(1, headers.length)}}"><p class="detail-empty">No history rows yet for this station.</p></td></tr>`;
+    return;
+  }}
+  const statusHeaders = new Set(['Voicelink Status', 'Fax Status', 'WiFi Status (Sim Data)', 'SSH Access']);
+  tbody.innerHTML = rows.map(row => {{
+    return '<tr>' + headers.map(h => {{
+      const val = row[h] ?? 'N/A';
+      const cls = statusHeaders.has(h) ? statusCellClass(val) : '';
+      if (h === 'Firmware Version') {{
+        const title = val && val !== 'N/A' ? ` title="${{escHtml(val)}}"` : '';
+        return `<td class="${{cls}}"><span class="fw-clamp"${{title}}>${{escHtml(val)}}</span></td>`;
+      }}
+      return `<td class="${{cls}}">${{escHtml(val)}}</td>`;
+    }}).join('') + '</tr>';
+  }}).join('');
+}}
+async function openStationDetail(imei) {{
+  if (!imei) return;
+  detailOpen = true;
+  if (progressTimer) {{ clearInterval(progressTimer); progressTimer = null; }}
+  const main = document.getElementById('progress-main');
+  const detail = document.getElementById('station-detail');
+  if (main) main.classList.add('is-hidden');
+  if (detail) detail.classList.remove('is-hidden');
+  const tbody = document.getElementById('detail-tbody');
+  if (tbody) tbody.innerHTML = '<tr><td><p class="detail-empty">Loading history…</p></td></tr>';
+  try {{
+    const r = await fetch('/api/station/history?imei=' + encodeURIComponent(imei) + '&days=14', {{ cache: 'no-store' }});
+    if (!r.ok) throw new Error('HTTP ' + r.status);
+    applyStationDetail(await r.json());
+  }} catch (e) {{
+    if (tbody) tbody.innerHTML = `<tr><td><p class="detail-empty">Could not load history: ${{escHtml(String(e))}}</p></td></tr>`;
+  }}
+}}
+function closeStationDetail(resumePoll) {{
+  detailOpen = false;
+  const main = document.getElementById('progress-main');
+  const detail = document.getElementById('station-detail');
+  if (main) main.classList.remove('is-hidden');
+  if (detail) detail.classList.add('is-hidden');
+  const doResume = resumePoll !== false;
+  if (doResume) {{
+    const active = document.querySelector('.tab.active');
+    const tabId = active && active.dataset ? active.dataset.tab : '';
+    if (tabId === 'progress') {{
+      refreshProgress();
+      if (!progressTimer) progressTimer = setInterval(refreshProgress, 2000);
+    }}
+  }}
 }}
 function applyProgress(data) {{
   const flow = data.flow || 'IDLE';
@@ -1156,6 +1329,7 @@ function applyProgress(data) {{
   applySummary(data.summary);
 }}
 async function refreshProgress() {{
+  if (detailOpen) return;
   try {{
     const r = await fetch('/api/progress', {{ cache: 'no-store' }});
     if (!r.ok) return;
@@ -1725,9 +1899,22 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(data)
 
     def do_GET(self) -> None:
-        path = (self.path or "/").split("?", 1)[0]
+        parsed = urlparse(self.path or "/")
+        path = parsed.path
         if path == "/api/progress":
             self._send_json(200, monprog.progress_snapshot(STATE["monitor_conf"]))
+            return
+        if path == "/api/station/history":
+            qs = parse_qs(parsed.query or "")
+            imei = (qs.get("imei") or [""])[0].strip()
+            try:
+                days = int((qs.get("days") or ["14"])[0])
+            except ValueError:
+                days = 14
+            if not imei:
+                self._send_json(400, {"ok": False, "message": "imei is required"})
+                return
+            self._send_json(200, monprog.station_history(STATE["monitor_conf"], imei, days))
             return
         data = page()
         self.send_response(200)

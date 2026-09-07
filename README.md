@@ -1,4 +1,4 @@
-# Automate Daily Monitor
+# Daily Monitor Automation
 
 **Raspberry Pi–based daily health automation for multi-site cellular router stations** (C11 + Python).
 

@@ -168,7 +168,9 @@ def csv_day(stamp: str) -> str:
     return s[:10]
 
 
-def upsert_csv(path: str, rows: list[dict]) -> None:
+def upsert_csv(path: str, rows: list[dict], report_ts: str | None = None) -> None:
+    """Upsert US station rows. Date is always Pi local time (VN), not US laptop time."""
+    stamp = (report_ts or "").strip() or datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     existing: list[dict[str, str]] = []
     if os.path.isfile(path):
         with open(path, newline="", encoding="utf-8-sig") as f:
@@ -184,7 +186,7 @@ def upsert_csv(path: str, rows: list[dict]) -> None:
         by_key[key] = rec
     for row in rows:
         rec = {
-            "Date": row.get("date") or "",
+            "Date": stamp,
             "Anydesk ID": row.get("anydesk") or "",
             "IMEI": row.get("imei") or "",
             "Firmware Version": row.get("firmware") or "N/A",
@@ -201,7 +203,11 @@ def upsert_csv(path: str, rows: list[dict]) -> None:
         if key not in by_key:
             order.append(key)
         by_key[key] = rec
-        log("INFO", f"CSV upsert {rec['IMEI']} SSH={rec['SSH Access']} up={rec['Uptime (hh:mm)']}")
+        log(
+            "INFO",
+            f"CSV upsert {rec['IMEI']} date={csv_day(stamp)} (Pi/VN) "
+            f"SSH={rec['SSH Access']} up={rec['Uptime (hh:mm)']}",
+        )
     os.makedirs(os.path.dirname(os.path.abspath(path)) or ".", exist_ok=True)
     with open(path, "w", newline="", encoding="utf-8") as f:
         w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
@@ -255,6 +261,8 @@ def main() -> int:
     remote_dir = f"C:/Users/{user}/simplifi-monitor"
     win_dir = remote_dir.replace("/", "\\")
     run(ssh_base(user, host) + ["cmd", "/c", f"if not exist {win_dir} mkdir {win_dir}"], timeout=20)
+    # Stamp CSV Date with Pi local time (Asia/Ho_Chi_Minh), not US laptop clock.
+    report_ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     job = {
         "gateway": cfg.get("router_gateway") or "192.168.2.1",
         "gateway_alt": cfg.get("router_gateway_alt") or "192.168.10.1",
@@ -264,7 +272,10 @@ def main() -> int:
         "restore_ssid": cfg.get("jump_restore_ssid") or "",
         "out": f"{remote_dir}/results.json",
         "stations": stations,
+        "report_ts": report_ts,
+        "report_tz": "Asia/Ho_Chi_Minh",
     }
+    log("INFO", f"US CSV Date stamp (Pi/VN): {report_ts}")
     job_local = os.path.join("output", "us_jump_job.json")
     os.makedirs("output", exist_ok=True)
     with open(job_local, "w", encoding="utf-8") as f:
@@ -377,7 +388,7 @@ def main() -> int:
     if not rows:
         log("WARN", "US collector returned no rows")
         return 1
-    upsert_csv(args.csv, rows)
+    upsert_csv(args.csv, rows, report_ts=report_ts)
     log("PASSED", f"US Virtual Stations: {len(rows)} row(s) in {args.csv}")
     return 0
 

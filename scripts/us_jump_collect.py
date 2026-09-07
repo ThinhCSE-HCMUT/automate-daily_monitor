@@ -227,7 +227,9 @@ def collect_one(job: dict, station: dict) -> dict:
         "wifi_sim_status": "FAIL",
         "ssh_access": "FAIL",
         "note": "",
-        "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        # Prefer Pi/VN stamp from job (US laptop local time differs by ~11–14h).
+        "date": (job.get("report_ts") or "").strip()
+        or datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "voicelink_status": "N/A",
     }
     if not ssid:

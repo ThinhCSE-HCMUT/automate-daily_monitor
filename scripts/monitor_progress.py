@@ -474,6 +474,7 @@ def progress_snapshot(monitor_conf: str) -> dict[str, Any]:
             flow = "IDLE"
             percent = 0
     friendly = paraphrase(flow, raw)
+    log_available = os.path.isfile(log_file) and os.path.getsize(log_file) > 0
     return {
         "running": running,
         "flow": flow,
@@ -481,6 +482,8 @@ def progress_snapshot(monitor_conf: str) -> dict[str, Any]:
         "message": friendly,
         "raw": raw,
         "updated": st.get("updated") or "",
+        "log_available": log_available,
+        "log_name": os.path.basename(log_file) if log_available else "",
         "summary": daily_summary(monitor_conf),
     }
 

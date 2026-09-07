@@ -15,6 +15,7 @@ import json
 import os
 import re
 import sys
+import time
 from email import message_from_bytes
 from email.policy import HTTP
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -722,6 +723,9 @@ input[type=text]:focus, input[type=password]:focus {{
 }}
 .btn-stop {{ background: #b42318; color: #fff; }}
 .btn-stop:hover:not(:disabled) {{ background: #912018; }}
+.btn-download {{ background: #0f766e; color: #fff; }}
+.btn-download:hover:not(:disabled) {{ background: #0d9488; }}
+.btn-download.is-hidden {{ display: none !important; }}
 .summary-wrap {{ margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--line); }}
 .summary-head {{
   display: flex; align-items: baseline; justify-content: space-between;
@@ -990,6 +994,12 @@ input[type=text]:focus, input[type=password]:focus {{
               </span>
               <span>Stop</span>
             </button>
+            <button type="button" class="btn btn-download is-hidden" id="btn-mon-log" onclick="downloadMonitorLog()">
+              <span class="btn-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" width="16" height="16"><path fill="currentColor" d="M19 9h-4V3H9v6H5l7 7 7-7zM5 18v2h14v-2H5z"/></svg>
+              </span>
+              <span>Download Log</span>
+            </button>
           </div>
           <div class="summary-wrap" id="daily-summary">
             <div class="summary-head">
@@ -1115,6 +1125,7 @@ input[type=text]:focus, input[type=password]:focus {{
           <li>The status line under the bar is a plain-English summary of the latest log.</li>
           <li><strong>Start</strong> launches <code>./monitor</code> on the Pi (disabled while a run is active).</li>
           <li><strong>Stop</strong> sends a terminate signal to the running job (disabled when idle).</li>
+          <li><strong>Download Log</strong> appears when idle if <code>output/monitor.log</code> exists — downloads the Pi’s latest monitor log.</li>
           <li><strong>Daily Monitor Summary</strong> shows today’s filled vs N/A fields, PASS/FAIL counts, and a color-coded table for all stations.</li>
           <li><strong>Needs manual</strong> counts info fields still N/A, plus Voice/Fax N/A on Voicelink and Fax stations. Virtual Voice/Fax shows <em>No Apply</em> and is not counted.</li>
           <li><strong>Detail</strong> opens up to the last 14 days of that station (or fewer if less history exists). Use Back to return here.</li>
@@ -1319,6 +1330,7 @@ function applyProgress(data) {{
   const raw = document.getElementById('prog-raw');
   const startBtn = document.getElementById('btn-mon-start');
   const stopBtn = document.getElementById('btn-mon-stop');
+  const logBtn = document.getElementById('btn-mon-log');
   if (flowEl) flowEl.textContent = flow;
   if (pctEl) pctEl.textContent = pct + '%';
   if (fill) fill.style.width = pct + '%';
@@ -1326,7 +1338,12 @@ function applyProgress(data) {{
   if (raw) raw.textContent = data.raw || '';
   if (startBtn) startBtn.disabled = running;
   if (stopBtn) stopBtn.disabled = !running;
+  // Download Log when idle and monitor.log exists (typically after a finished run).
+  if (logBtn) logBtn.classList.toggle('is-hidden', !(!running && !!data.log_available));
   applySummary(data.summary);
+}}
+function downloadMonitorLog() {{
+  window.location.href = '/api/monitor/log?download=1';
 }}
 async function refreshProgress() {{
   if (detailOpen) return;
@@ -1903,6 +1920,29 @@ class Handler(BaseHTTPRequestHandler):
         path = parsed.path
         if path == "/api/progress":
             self._send_json(200, monprog.progress_snapshot(STATE["monitor_conf"]))
+            return
+        if path == "/api/monitor/log":
+            log_path = monprog.resolve_log_file(
+                monprog.project_root(STATE["monitor_conf"]), STATE["monitor_conf"]
+            )
+            if not os.path.isfile(log_path):
+                self._send_json(404, {"ok": False, "message": "monitor.log not found"})
+                return
+            try:
+                with open(log_path, "rb") as f:
+                    payload = f.read()
+            except OSError as exc:
+                self._send_json(500, {"ok": False, "message": str(exc)})
+                return
+            stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(os.path.getmtime(log_path)))
+            filename = f"monitor_{stamp}.log"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Disposition", f'attachment; filename="{filename}"')
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
             return
         if path == "/api/station/history":
             qs = parse_qs(parsed.query or "")
